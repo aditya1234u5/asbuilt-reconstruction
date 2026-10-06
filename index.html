@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>As-Built Reconstruction</title>
+<meta name="description" content="Turns a noisy centerline survey CSV into a clean as-built polyline of straight runs and bends.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script defer src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div>
+      <h1>As-Built Reconstruction</h1>
+      <p class="sub">Turns a noisy centerline survey shot every 20-40 ft into a clean polyline of straight runs and bends — RDP presort, total-least-squares line fit, and a major-bend rule, tuned by pipe width.</p>
+    </div>
+    <svg class="compass" viewBox="0 0 60 60" fill="none" aria-hidden="true">
+      <circle cx="30" cy="30" r="27" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+      <path d="M30 6 L36 30 L30 26 L24 30 Z" fill="var(--red)"/>
+      <path d="M30 54 L24 30 L30 34 L36 30 Z" fill="currentColor" opacity="0.5"/>
+      <text x="30" y="16" text-anchor="middle" font-family="IBM Plex Mono" font-size="7" fill="currentColor">N</text>
+    </svg>
+  </header>
+
+  <div class="layout">
+    <!-- LEFT: title block -->
+    <div>
+      <div class="block">
+        <div class="block-title">01 &mdash; SURVEY IMPORT</div>
+        <div class="block-body">
+          <div class="dropzone" id="dropzone">
+            <div><strong>Drop as-built CSV</strong> or click to browse</div>
+            <div style="margin-top:4px; font-size:11.5px;">Point #, Description, X, Y (Z optional)</div>
+            <input type="file" id="fileInput" accept=".csv,text/csv">
+          </div>
+          <div class="filename" id="filename"></div>
+
+          <div id="mapping" style="display:none;">
+            <div class="maprow"><label>X <span class="required-mark">*</span></label><select id="mapX"></select></div>
+            <div class="maprow"><label>Y <span class="required-mark">*</span></label><select id="mapY"></select></div>
+            <div class="maprow"><label>Z</label><select id="mapZ"></select></div>
+            <div class="maprow"><label>Point #</label><select id="mapPt"></select></div>
+            <div class="maprow"><label>Description</label><select id="mapDesc"></select></div>
+          </div>
+
+          <div class="sample-row">
+            <button class="btn secondary" id="sample8">Sample route &mdash; 8" pipe</button>
+            <button class="btn secondary" id="sample36">Sample route &mdash; 36" pipe</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">02 &mdash; PARAMETERS</div>
+        <div class="block-body">
+          <div class="param">
+            <div class="param-head"><label>Pipe width</label><span class="val" id="widthVal">24 in</span></div>
+            <input type="range" id="widthSlider" min="4" max="60" step="1" value="24">
+            <div class="param-note">Sets the noise tolerance (half the pipe width) &mdash; wider pipe forgives more survey meander before treating it as a real bend.</div>
+          </div>
+          <div class="param">
+            <div class="param-head"><label>Major bend threshold</label><span class="val" id="deflVal">10&deg;</span></div>
+            <input type="range" id="deflSlider" min="2" max="30" step="1" value="10">
+            <div class="param-note">Deflection at or above this angle is kept as a corner; anything under it gets absorbed into a straight run.</div>
+          </div>
+          <div class="param">
+            <div class="param-head"><label>Min. points per segment</label><span class="val" id="minPtsVal">5</span></div>
+            <input type="range" id="minPtsSlider" min="2" max="12" step="1" value="5">
+            <div class="param-note">A segment built from fewer shots than this has its bearing folded into a neighbor instead of trusted as a real corner &mdash; guards against noise on narrow pipe reading as a false bend.</div>
+          </div>
+          <div class="checkrow">
+            <label><input type="checkbox" id="arcToggle"> Detect long-radius curves</label>
+            <div class="param-note">Groups 2+ consecutive moderate same-direction bends into one fitted arc instead of sharp corners. Works best with a lower min-points setting, which preserves more bend detail to fit against.</div>
+          </div>
+          <button class="btn" id="reconstructBtn" disabled>Reconstruct</button>
+          <button class="btn secondary" id="autoTuneBtn" disabled>Auto-tune parameters</button>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">03 &mdash; RESULT</div>
+        <div class="statgrid">
+          <div class="statcell"><div class="k">SHOTS IN</div><div class="v" id="statIn">&mdash;</div></div>
+          <div class="statcell"><div class="k">VERTICES OUT</div><div class="v accent" id="statOut">&mdash;</div></div>
+          <div class="statcell"><div class="k">REDUCTION</div><div class="v" id="statReduction">&mdash;</div></div>
+          <div class="statcell"><div class="k">MAX RESIDUAL</div><div class="v" id="statMaxResidual">&mdash;</div></div>
+          <div class="statcell"><div class="k">OUTLIERS DROPPED</div><div class="v warn" id="statOutliers">&mdash;</div></div>
+          <div class="statcell"><div class="k">TOTAL LENGTH</div><div class="v" id="statLength">&mdash;</div></div>
+        </div>
+      </div>
+
+      <div class="block">
+        <details class="methodology">
+          <summary>How this works</summary>
+          <div class="steps">
+            <ol>
+              <li><strong>RDP presort</strong> &mdash; simplifies the raw shot chain using a tolerance of half the pipe width, so tighter pipe keeps more detail and wider pipe forgives more meander.</li>
+              <li><strong>Line fit</strong> &mdash; each candidate segment is fit with total-least-squares (2D PCA), which handles any orientation, not just non-vertical runs.</li>
+              <li><strong>Bend merge</strong> &mdash; neighboring segments are folded together, least-risky first, whenever their deflection is under the major-bend threshold or a segment has too few points to trust its bearing yet.</li>
+              <li><strong>Outlier rejection</strong> &mdash; points sitting far outside a segment's own noise level (a robust MAD-based check) are dropped and the segment is refit.</li>
+              <li><strong>Vertices</strong> &mdash; reconstructed as the geometric intersections of consecutive fitted lines, not as any single raw survey shot.</li>
+            </ol>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <!-- RIGHT: sheet -->
+    <div>
+      <div class="sheet">
+        <div class="sheet-head">
+          <span>PLAN VIEW &mdash; scroll to zoom, drag canvas to pan, drag a white vertex to nudge it</span>
+          <div class="legend">
+            <span><i class="swatch raw"></i>raw shots</span>
+            <span><i class="swatch outlier"></i>rejected</span>
+            <span><i class="swatch line"></i>reconstructed</span>
+            <span><i class="swatch arc"></i>arc</span>
+          </div>
+        </div>
+        <div class="plot-wrap">
+          <canvas id="plot"></canvas>
+          <div class="empty-state" id="emptyState">
+            <div><strong>Sheet is blank</strong>Import an as-built CSV or load a sample route to begin.</div>
+          </div>
+        </div>
+        <canvas id="profile"></canvas>
+      </div>
+
+      <div class="block" style="margin-top:18px;">
+        <div class="block-title">RECONSTRUCTED VERTICES</div>
+        <div class="table-scroll">
+          <table class="data-table" id="vertexTable">
+            <thead><tr><th>PT</th><th>TYPE</th><th>STATION</th><th>X</th><th>Y</th><th>BEARING IN</th><th>DEFL.</th><th>LENGTH / RADIUS</th></tr></thead>
+            <tbody id="vertexBody"><tr><td colspan="8" style="color:var(--ink-soft); text-align:center; padding:20px;">No reconstruction yet</td></tr></tbody>
+          </table>
+        </div>
+        <div class="sheet-footer">
+          <button class="btn secondary" id="downloadVerticesBtn" style="width:auto;" disabled>Download vertices CSV</button>
+          <button class="btn secondary" id="downloadDXFBtn" style="width:auto;" disabled>Export DXF</button>
+          <button class="btn secondary" id="downloadXMLBtn" style="width:auto;" disabled>Export LandXML</button>
+          <button class="btn secondary" id="printBtn" style="width:auto;" disabled>Print / Save PDF</button>
+        </div>
+      </div>
+
+      <div class="block" style="margin-top:18px;">
+        <div class="block-title">SEGMENT QA</div>
+        <div class="table-scroll">
+          <table class="data-table" id="qaTable">
+            <thead><tr><th>SEG</th><th>PTS</th><th>MAX RESIDUAL</th><th>RMS</th><th>OUTLIERS</th></tr></thead>
+            <tbody id="qaBody"><tr><td colspan="5" style="color:var(--ink-soft); text-align:center; padding:20px;">No reconstruction yet</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
