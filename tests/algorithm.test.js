@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   bearingOfVector, deflection, rdp, fitLinePCA, reconstruct,
   fitElevation, fitCircle, detectArcs, toDXF, toLandXML,
-  generateSyntheticRoute, SAMPLE_TRUE_ROUTE
+  generateSyntheticRoute, SAMPLE_TRUE_ROUTE,
+  buildCurveRoute, SAMPLE_CURVE_ROUTE, pipeWidthInUnits
 } from '../js/algorithm.js';
 
 test('bearingOfVector: north/east/south/west', () => {
@@ -124,4 +125,56 @@ test('toLandXML: produces parseable-looking XML with matching point count', () =
   assert.ok(xml.startsWith('<?xml'));
   const pointMatches = xml.match(/<CgPoint name=/g) || []; // not <CgPoints> container
   assert.equal(pointMatches.length, r.vertices.length);
+});
+
+test('buildCurveRoute: arc vertices all sit on a circle of the requested radius', () => {
+  const R = 400;
+  const route = buildCurveRoute(R, 90, 7.5, 250);
+  // vertices 1..(1+12) are the lead-in end plus the 12 arc steps; all are R from the centre (R, 250)
+  for (let k = 1; k <= 13; k++) {
+    const d = Math.hypot(route[k].x - R, route[k].y - 250);
+    assert.ok(Math.abs(d - R) < 1e-6, `vertex ${k} off the circle by ${d - R}`);
+  }
+});
+
+test('detectArcs: curved sample gives line + arc + line with the arc radius near truth', () => {
+  const raw = generateSyntheticRoute(SAMPLE_CURVE_ROUTE, 10, 1, 1, 100, 0.01);
+  const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 3, 3);
+  const elements = detectArcs(r);
+  assert.deepEqual(elements.map(e => e.type), ['line', 'arc', 'line']);
+  const arc = elements[1];
+  assert.ok(Math.abs(arc.radius - 400) / 400 < 0.05, `radius ${arc.radius} not within 5% of 400`);
+});
+
+test('detectArcs: tangent runs are kept out of the arc', () => {
+  const raw = generateSyntheticRoute(SAMPLE_CURVE_ROUTE, 10, 1, 1, 100, 0.01);
+  const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 3, 3);
+  const [lead, arc, out] = detectArcs(r);
+  // lead-in is ~250 ft and lead-out ~250 ft; the arc must not swallow them
+  assert.ok(Math.hypot(lead.to.x - lead.from.x, lead.to.y - lead.from.y) > 200);
+  assert.ok(Math.hypot(out.to.x - out.from.x, out.to.y - out.from.y) > 200);
+  assert.ok(arc.from === lead.to && arc.to === out.from, 'elements should join end to end');
+});
+
+test('pipeWidthInUnits: inches to feet and metres', () => {
+  assert.ok(Math.abs(pipeWidthInUnits(12, 'ft') - 1) < 1e-12);
+  assert.ok(Math.abs(pipeWidthInUnits(8, 'm') - 0.2032) < 1e-12);
+  assert.throws(() => pipeWidthInUnits(8, 'yards'));
+});
+
+test('units: the same route in metres reconstructs to the same vertex count', () => {
+  const FT_TO_M = 0.3048;
+  const raw = generateSyntheticRoute(SAMPLE_TRUE_ROUTE, 25, 1.5, 7, 100, 0.01);
+  const rawM = raw.map(p => ({ ...p, x: p.x * FT_TO_M, y: p.y * FT_TO_M, z: p.z * FT_TO_M }));
+  const inFt = reconstruct(raw, pipeWidthInUnits(24, 'ft'), 10, 5);
+  const inM = reconstruct(rawM, pipeWidthInUnits(24, 'm'), 10, 5);
+  assert.equal(inM.vertices.length, inFt.vertices.length);
+});
+
+test('toLandXML: declares the linear unit', () => {
+  const raw = generateSyntheticRoute(SAMPLE_TRUE_ROUTE, 25, 1.5, 7, 100, 0.01);
+  const r = reconstruct(raw, 2, 10, 5);
+  const els = detectArcs(r);
+  assert.ok(toLandXML(els, r.vertices).includes('linearUnit="foot"'));
+  assert.ok(toLandXML(els, r.vertices, 'm').includes('linearUnit="meter"'));
 });

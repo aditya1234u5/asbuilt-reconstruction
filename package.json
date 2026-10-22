@@ -1,11 +1,12 @@
 {
   "name": "asbuilt-reconstruction",
   "version": "1.0.0",
-  "description": "As-built pipeline reconstruction — turns noisy survey CSV points into a clean polyline.",
+  "description": "As-built pipeline reconstruction \u2014 turns noisy survey CSV points into a clean polyline.",
   "type": "module",
   "scripts": {
     "test": "node --test tests/algorithm.test.js",
-    "start": "python3 -m http.server 8000"
+    "start": "python3 -m http.server 8000",
+    "eval": "node eval/evaluate.js"
   },
   "license": "MIT"
 }

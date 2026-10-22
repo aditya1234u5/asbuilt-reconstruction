@@ -1,6 +1,7 @@
 import {
   bearingOfVector, deflection, reconstruct, fitElevation, generateSyntheticRoute, SAMPLE_TRUE_ROUTE,
-  detectArcs, toDXF, toLandXML
+  detectArcs, toDXF, toLandXML,
+  SAMPLE_CURVE_ROUTE, UNITS, pipeWidthInUnits
 } from './algorithm.js';
 
 /* ---------------- state ---------------- */
@@ -39,6 +40,8 @@ const downloadXMLBtn = document.getElementById('downloadXMLBtn');
 const printBtn = document.getElementById('printBtn');
 const sample8Btn = document.getElementById('sample8');
 const sample36Btn = document.getElementById('sample36');
+const sampleCurveBtn = document.getElementById('sampleCurve');
+const unitSelect = document.getElementById('unitSelect');
 const arcToggle = document.getElementById('arcToggle');
 const autoTuneBtn = document.getElementById('autoTuneBtn');
 
@@ -107,19 +110,35 @@ function buildRawPointsFromMapping() {
 }
 
 /* ---------------- sample routes ---------------- */
-sample8Btn.addEventListener('click', () => loadSample(8, 4));
-sample36Btn.addEventListener('click', () => loadSample(36, 11));
-function loadSample(widthIn, seed) {
+const unitLabel = () => UNITS[unitSelect.value].label;
+
+// Each preset also sets the sliders it was tuned with, so clicking a sample
+// always gives a predictable result regardless of earlier slider changes.
+const SAMPLE_DEFAULTS = {
+  route: SAMPLE_TRUE_ROUTE, spacing: 25, noise: 1.5, defl: 10, minPts: 5, arcs: false, name: 'test route'
+};
+sample8Btn.addEventListener('click', () => loadSample({ widthIn: 8, seed: 4 }));
+sample36Btn.addEventListener('click', () => loadSample({ widthIn: 36, seed: 11 }));
+sampleCurveBtn.addEventListener('click', () => loadSample({
+  widthIn: 8, seed: 1, route: SAMPLE_CURVE_ROUTE, spacing: 10, noise: 1,
+  defl: 3, minPts: 3, arcs: true, name: 'curved route (90\u00b0 sweep, R = 400 ft)'
+}));
+function loadSample(opts) {
+  const o = { ...SAMPLE_DEFAULTS, ...opts };
   // crew meander is roughly constant regardless of pipe diameter (it's positioning
-  // error, not physical width) — both samples use the same noise amplitude, so the
-  // vertex-count difference you'll see comes purely from the pipe-width tolerance.
-  const pts = generateSyntheticRoute(SAMPLE_TRUE_ROUTE, 25, 1.5, seed, 100, 0.01);
+  // error, not physical width) — the 8"/36" samples use the same noise amplitude, so
+  // the vertex-count difference you'll see comes purely from the pipe-width tolerance.
+  unitSelect.value = 'ft'; // sample coordinates are generated in feet
+  const pts = generateSyntheticRoute(o.route, o.spacing, o.noise, o.seed, 100, 0.01);
   rawPoints = pts.map((p, i) => ({ x: p.x, y: p.y, z: p.z, pt: String(i + 1), desc: 'CL PIPE' }));
   parsedRows = []; headers = [];
   mappingEl.style.display = 'none';
-  filenameEl.textContent = `synthetic ${widthIn}" test route (${pts.length} shots)`;
+  filenameEl.textContent = `synthetic ${o.widthIn}" ${o.name} (${pts.length} shots)`;
   filenameEl.classList.add('show');
-  widthSlider.value = widthIn;
+  widthSlider.value = o.widthIn;
+  deflSlider.value = o.defl;
+  minPtsSlider.value = o.minPts;
+  arcToggle.checked = o.arcs;
   updateParamLabels();
   reconstructBtn.disabled = false;
   autoTuneBtn.disabled = false;
@@ -135,6 +154,15 @@ function updateParamLabels() {
 [widthSlider, deflSlider, minPtsSlider].forEach(el => el.addEventListener('input', updateParamLabels));
 updateParamLabels();
 
+/* ---------------- units ---------------- */
+// Changing units changes how the (inch) pipe width converts to coordinate units,
+// so re-run if a dataset is already loaded.
+unitSelect.addEventListener('change', () => {
+  if (!rawPoints.length) return;
+  if (headers.length) buildRawPointsFromMapping();
+  runReconstruction();
+});
+
 /* ---------------- run ---------------- */
 reconstructBtn.addEventListener('click', () => {
   if (headers.length) buildRawPointsFromMapping();
@@ -143,7 +171,7 @@ reconstructBtn.addEventListener('click', () => {
 
 function runReconstruction() {
   if (!rawPoints.length) { alert('No valid X/Y points found — check your column mapping.'); return; }
-  const widthFt = parseFloat(widthSlider.value) / 12; // inches -> feet (assumes survey coords in feet)
+  const widthFt = pipeWidthInUnits(parseFloat(widthSlider.value), unitSelect.value); // inches -> survey units (ft or m)
   const deflDeg = parseFloat(deflSlider.value);
   const minPts = parseInt(minPtsSlider.value, 10);
   result = reconstruct(rawPoints, widthFt, deflDeg, minPts);
@@ -153,9 +181,9 @@ function runReconstruction() {
   const reduction = 100 * (1 - result.vertices.length / rawPoints.length);
   statReduction.textContent = (reduction >= 0 ? reduction.toFixed(0) : '0') + '%';
   const maxResidual = result.qa.length ? Math.max(...result.qa.map(q => q.maxResidual)) : 0;
-  statMaxResidual.textContent = maxResidual.toFixed(2) + " ft";
+  statMaxResidual.textContent = maxResidual.toFixed(2) + ' ' + unitLabel();
   statOutliers.textContent = result.outlierCount;
-  statLength.textContent = result.stations[result.stations.length - 1].toFixed(0) + " ft";
+  statLength.textContent = result.stations[result.stations.length - 1].toFixed(0) + ' ' + unitLabel();
 
   elements = arcToggle.checked ? detectArcs(result) : result.vertices.slice(0, -1).map((v, i) => ({ type: 'line', from: v, to: result.vertices[i + 1] }));
 
@@ -249,7 +277,7 @@ downloadDXFBtn.addEventListener('click', () => {
 
 downloadXMLBtn.addEventListener('click', () => {
   if (!result) return;
-  const xml = toLandXML(elements, result.vertices);
+  const xml = toLandXML(elements, result.vertices, unitSelect.value);
   const blob = new Blob([xml], { type: 'application/xml' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -264,7 +292,7 @@ printBtn.addEventListener('click', () => window.print());
 autoTuneBtn.addEventListener('click', () => {
   if (headers.length) buildRawPointsFromMapping();
   if (!rawPoints.length) { alert('No valid X/Y points found — check your column mapping.'); return; }
-  const widthFt = parseFloat(widthSlider.value) / 12;
+  const widthFt = pipeWidthInUnits(parseFloat(widthSlider.value), unitSelect.value);
   const minPtsOptions = [3, 4, 5, 6, 7, 8];
   const deflOptions = [6, 8, 10, 12, 15, 20];
   let best = null;
@@ -519,7 +547,7 @@ function recomputeAfterNudge() {
     stations.push(station);
   }
   result.stations = stations;
-  statLength.textContent = stations[stations.length - 1].toFixed(0) + " ft";
+  statLength.textContent = stations[stations.length - 1].toFixed(0) + ' ' + unitLabel();
   // keep element endpoints in sync by position (arcs keep their fitted center/radius —
   // nudging a vertex on an arc just moves where the arc visually starts/ends)
   elements = arcToggle.checked ? elements : result.vertices.slice(0, -1).map((v, i) => ({ type: 'line', from: v, to: result.vertices[i + 1] }));

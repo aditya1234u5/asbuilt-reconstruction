@@ -16,6 +16,10 @@ CAD. This does it in a browser tab.
 
 *The 8″ sample route: 59 raw survey shots reduced to 5 vertices (92% reduction), max residual 2.87 ft, with the elevation profile underneath.*
 
+![Curved sample route — straight lead-in, a fitted 90° arc (blue), straight lead-out](docs/screenshot-curve.png)
+
+*The **Curved route** sample: a true R = 400 ft sweep is recovered as line + arc + line.*
+
 ## How it works
 
 1. **RDP presort** — Ramer-Douglas-Peucker simplification with a tolerance of
@@ -42,13 +46,16 @@ CAD. This does it in a browser tab.
 7. **Curve detection (optional)** — groups 2+ consecutive, same-direction,
    moderate-angle bends into one fitted circular arc (Kasa algebraic circle
    fit) instead of a chain of sharp corners, for routes with genuine
-   long-radius sweeps rather than mitered elbows. This is a post-process over
-   whatever vertices the main pipeline already produced — if a high
-   "min points per segment" setting already merged part of a curve into an
-   adjacent straight run, the detected arc can bleed slightly into it.
-   Lowering that setting before reconstructing preserves more bend
-   resolution for a tighter fit. Off by default; enable with the "Detect
-   long-radius curves" checkbox.
+   long-radius sweeps rather than mitered elbows. Straight lead-in/lead-out
+   runs are trimmed off the arc (a tangent is much longer than the chords of
+   a real curve), so they stay straight lines instead of being folded into
+   the fit. This is a post-process over whatever vertices the main pipeline
+   already produced — if a high "min points per segment" setting already
+   merged part of a curve into an adjacent straight run, the detected arc can
+   still bleed slightly into it. Lowering that setting before reconstructing
+   preserves more bend resolution for a tighter fit. Off by default; enable
+   with the "Detect long-radius curves" checkbox, or click **Curved route**
+   to see it work.
 
 Bearing and deflection follow surveying convention: bearing is azimuth from
 north (`atan2(dx, dy)`, not the usual `atan2(dy, dx)`), and deflection is the
@@ -67,6 +74,11 @@ boundary.
 │   └── app.js                CSV import, parameters, canvas rendering, tables, export buttons
 ├── tests/
 │   └── algorithm.test.js    unit tests (Node's built-in test runner, no dependency)
+├── eval/
+│   └── evaluate.js          accuracy evaluation on synthetic routes with known ground truth
+├── docs/
+│   ├── EVALUATION.md        generated results (npm run eval)
+│   └── screenshot*.png
 ├── sample-data/
 │   ├── sample_8in_pipe.csv   synthetic as-built route, narrow pipe
 │   └── sample_36in_pipe.csv  same route, wide pipe — fewer surviving vertices
@@ -85,11 +97,22 @@ changes.
 npm test
 ```
 
-14 tests covering bearing/deflection math, RDP, PCA line fit, point
+20 tests covering bearing/deflection math, RDP, PCA line fit, point
 conservation (no raw shot is ever duplicated or lost across the whole
 pipeline), pipe-width sensitivity, stationing, elevation fit, circle fit,
-arc-detection (including that it never fires on a route of isolated sharp
-corners), and both export formats.
+arc detection (it never fires on a route of isolated sharp corners, and on a
+true 400 ft-radius sweep it returns line + arc + line with the radius within
+5%), feet/metre conversion, and both export formats.
+
+## Accuracy
+
+`npm run eval` runs the pipeline on synthetic routes with known ground truth
+across noise levels, pipe widths, injected gross outliers and a curved route,
+and writes the results to [`docs/EVALUATION.md`](docs/EVALUATION.md). It is
+synthetic-data only (see the caveats in that file), but it is a measured
+comparison rather than a claim. One finding worth knowing about: a correct
+vertex *count* does not guarantee correct geometry — see the
+"Which bends get missed?" table.
 
 ## Running it locally
 
@@ -109,13 +132,15 @@ Then open `http://localhost:8000`.
 
 Any CSV with X and Y columns works — the app auto-guesses common header
 names (`X`/`Easting`, `Y`/`Northing`, `Z`/`Elevation`, `Point #`,
-`Description`) and lets you remap them if it guesses wrong. Coordinates are
-assumed to be in **feet** (the pipe-width slider, in inches, is converted to
-feet internally) — adjust `js/app.js`'s `widthFt` conversion if your survey
-uses a different unit.
+`Description`) and lets you remap them if it guesses wrong. Choose the units
+of your X/Y coordinates (**US feet** or **meters**) in the *Survey units*
+control; the pipe-width slider stays in inches and is converted for you. The
+chosen unit labels the results and is written into the LandXML export.
 
 Two ready-made CSVs are in `sample-data/` if you want to test without your
-own data, or just click **Sample route** in the app itself.
+own data, or just click a sample route in the app itself (the two corner
+routes, or the **Curved route** that shows arc detection). Samples are
+generated in feet.
 
 ## Parameters
 
@@ -139,6 +164,21 @@ own data, or just click **Sample route** in the app itself.
 - **Print / Save PDF** — a dedicated print stylesheet lays out the plan view,
   elevation profile, and both tables as a clean report; use the browser's
   "Save as PDF" destination in the print dialog.
+
+## Limitations
+
+- **Short runs between bends can be absorbed.** In the evaluation, ~10% of
+  trials lost the corner at each end of the route's shortest (260 ft) run at
+  default settings, even though the vertex count was still right. Check the
+  geometry, not just the vertex count, on routes with short runs between
+  bends.
+- **Arc detection is a heuristic.** The tangent trim uses a length rule
+  (an end run more than 2× the median chord is treated as a tangent). On the
+  curved demo with noise of ±1 ft, about 84% of trials gave the ideal
+  line + arc + line, and the worst fitted radius was 20% off.
+- Single route, 2D plan geometry (elevation is fitted per segment but does not
+  affect bend detection), no loops or branches.
+- Validated on synthetic data only; no field data has been run through it.
 
 ## Deployment
 

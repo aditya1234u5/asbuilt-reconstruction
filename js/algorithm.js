@@ -289,7 +289,7 @@ export function generateSyntheticRoute(trueVerts, spacing, noiseAmp, seed, zStar
   return pts;
 }
 
-/** A route with three real bends (90 deg, ~38 deg, ~52 deg) — enough to show
+/** A route with three real bends (90 deg, ~38 deg, 90 deg) — enough to show
  *  both "major bends survive" and "pipe width changes vertex count". */
 export const SAMPLE_TRUE_ROUTE = [
   { x: 0, y: 0 },
@@ -301,6 +301,40 @@ export const SAMPLE_TRUE_ROUTE = [
     y: 480 + 420 * Math.sin(-38 * Math.PI / 180) + 300 * Math.sin(52 * Math.PI / 180)
   },
 ];
+
+/** Builds a route with a genuine long-radius sweep: a straight lead-in, a
+ *  circular arc (approximated by an inscribed polyline with one vertex every
+ *  `stepDeg`), then a straight lead-out. Starts heading north and turns
+ *  clockwise (to the right). Units are whatever the caller treats coordinates as. */
+export function buildCurveRoute(radius = 400, sweepDeg = 90, stepDeg = 7.5, straight = 250) {
+  const verts = [{ x: 0, y: 0 }, { x: 0, y: straight }];
+  const cx = radius, cy = straight; // arc centre sits east of the end of the lead-in
+  const n = Math.round(sweepDeg / stepDeg);
+  for (let k = 1; k <= n; k++) {
+    const a = Math.PI - (k * stepDeg * Math.PI) / 180;
+    verts.push({ x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) });
+  }
+  const last = verts[verts.length - 1], h = (sweepDeg * Math.PI) / 180;
+  verts.push({ x: last.x + straight * Math.sin(h), y: last.y + straight * Math.cos(h) });
+  return verts;
+}
+
+/** 90 deg sweep, R = 400 ft — used by the "Curved route" demo sample. */
+export const SAMPLE_CURVE_ROUTE = buildCurveRoute();
+
+/* ------------------------------- survey units ------------------------------ */
+
+/** Pipe width is always entered in inches; survey coordinates may be in feet or
+ *  metres. This converts the width into coordinate units for reconstruct(). */
+export const UNITS = {
+  ft: { label: 'ft', inchToUnit: 1 / 12 },
+  m: { label: 'm', inchToUnit: 0.0254 }
+};
+export function pipeWidthInUnits(widthInches, unit = 'ft') {
+  const u = UNITS[unit];
+  if (!u) throw new Error('Unknown unit: ' + unit);
+  return widthInches * u.inchToUnit;
+}
 
 /* ------------------------------ arc detection ----------------------------- */
 
@@ -335,6 +369,9 @@ export function fitCircle(points) {
  * isolated sharp corners (a single bend surrounded by long straight runs) as
  * ordinary line-to-line vertices.
  *
+ * Tangent runs at either end of a curve are trimmed off the arc (see "Tangent
+ * trim" below) so a straight lead-in / lead-out is not folded into the fit.
+ *
  * Caveat (documented, not hidden): this is a post-process over whatever
  * vertices `reconstruct()` already produced. If the main merge pass already
  * absorbed part of a gentle curve into an adjacent "straight" segment (which
@@ -367,15 +404,30 @@ export function detectArcs(result, minArcDeg = 3, maxArcDeg = 60) {
       j++;
     }
     if (j - i >= 2) {
+      // Tangent trim: the lead-in / lead-out straight runs form a "moderate
+      // bend" with the first / last curve chord, so they get swept into the
+      // group. A tangent is far longer than the chords of a genuine arc, so
+      // when an end line is more than 2x the median interior chord length it
+      // is emitted as an ordinary line and kept out of the circle fit.
+      const lenOf = k => Math.hypot(verts[k + 1].x - verts[k].x, verts[k + 1].y - verts[k].y);
+      let a = i, b = j;
+      const interior = [];
+      for (let k = i + 1; k <= j - 1; k++) interior.push(lenOf(k));
+      interior.sort((x, y) => x - y);
+      const median = interior.length ? interior[Math.floor(interior.length / 2)] : 0;
+      if (b - a >= 3 && lenOf(a) > 2 * median) a++;
+      if (b - a >= 3 && lenOf(b) > 2 * median) b--;
+
       const ptsForFit = [];
-      for (let li = i; li <= j; li++) ptsForFit.push(...lines[li].points);
+      for (let li = a; li <= b; li++) ptsForFit.push(...lines[li].points);
       const circle = fitCircle(ptsForFit);
       if (circle) {
+        if (a > i) elements.push({ type: 'line', from: verts[i], to: verts[a] });
         elements.push({
-          type: 'arc', from: verts[i], to: verts[j + 1],
+          type: 'arc', from: verts[a], to: verts[b + 1],
           center: { x: circle.cx, y: circle.cy }, radius: circle.r
         });
-        i = j + 1;
+        i = b + 1;
         continue;
       }
     }
@@ -424,7 +476,7 @@ export function toDXF(elements) {
 
 /** LandXML <CgPoints>/<CoordGeom> fragment for the reconstructed centerline
  *  (lines + arcs), for pipeline/survey packages that prefer LandXML over DXF. */
-export function toLandXML(elements, vertices) {
+export function toLandXML(elements, vertices, unit = 'ft') {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   let pts = vertices.map((v, i) =>
     `    <CgPoint name="V${i + 1}">${v.y.toFixed(4)} ${v.x.toFixed(4)}</CgPoint>`
@@ -437,6 +489,7 @@ export function toLandXML(elements, vertices) {
   }).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2">
+  ${unit === 'm' ? '<Units><Metric linearUnit="meter"/></Units>' : '<Units><Imperial linearUnit="foot"/></Units>'}
   <CgPoints>
 ${pts}
   </CgPoints>

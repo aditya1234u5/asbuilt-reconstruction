@@ -52,12 +52,23 @@
             <button class="btn secondary" id="sample8">Sample route &mdash; 8" pipe</button>
             <button class="btn secondary" id="sample36">Sample route &mdash; 36" pipe</button>
           </div>
+          <div class="sample-row">
+            <button class="btn secondary" id="sampleCurve">Curved route &mdash; arc detection demo</button>
+          </div>
         </div>
       </div>
 
       <div class="block">
         <div class="block-title">02 &mdash; PARAMETERS</div>
         <div class="block-body">
+          <div class="param">
+            <div class="param-head"><label for="unitSelect">Survey units</label></div>
+            <select id="unitSelect" class="unit-select">
+              <option value="ft">US feet</option>
+              <option value="m">Meters</option>
+            </select>
+            <div class="param-note">Units of the X/Y coordinates in your CSV. Pipe width stays in inches and is converted for you.</div>
+          </div>
           <div class="param">
             <div class="param-head"><label>Pipe width</label><span class="val" id="widthVal">24 in</span></div>
             <input type="range" id="widthSlider" min="4" max="60" step="1" value="24">

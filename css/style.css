@@ -126,6 +126,16 @@ header.masthead p.sub {
 }
 .required-mark { color: var(--red); }
 
+.unit-select {
+  width: 100%;
+  margin-top: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12.5px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  padding: 6px 8px;
+}
 .param { margin-top: 16px; }
 .param:first-of-type { margin-top: 0; }
 .param-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
