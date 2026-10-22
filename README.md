@@ -71,9 +71,11 @@ boundary.
 │   └── style.css           survey/CAD-styled UI (light vellum + dark cyanotype) + print stylesheet
 ├── js/
 │   ├── algorithm.js         reconstruction, arc detection, DXF/LandXML export — no DOM, unit-testable
+│   ├── geojson.js           GeoJSON line extraction, lon/lat → UTM projection, survey simulator — no DOM
 │   └── app.js                CSV import, parameters, canvas rendering, tables, export buttons
 ├── tests/
-│   └── algorithm.test.js    unit tests (Node's built-in test runner, no dependency)
+│   ├── algorithm.test.js    unit tests (Node's built-in test runner, no dependency)
+│   └── geojson.test.js      GeoJSON import tests
 ├── eval/
 │   └── evaluate.js          accuracy evaluation on synthetic routes with known ground truth
 ├── docs/
@@ -97,12 +99,14 @@ changes.
 npm test
 ```
 
-20 tests covering bearing/deflection math, RDP, PCA line fit, point
+25 tests covering bearing/deflection math, RDP, PCA line fit, point
 conservation (no raw shot is ever duplicated or lost across the whole
 pipeline), pipe-width sensitivity, stationing, elevation fit, circle fit,
 arc detection (it never fires on a route of isolated sharp corners, and on a
 true 400 ft-radius sweep it returns line + arc + line with the radius within
-5%), feet/metre conversion, and both export formats.
+5%), feet/metre conversion, both export formats, and the GeoJSON import
+(UTM projection checked against pyproj to under 1 mm, line extraction, and
+the deterministic survey simulator).
 
 ## Accuracy
 
@@ -141,6 +145,12 @@ Two ready-made CSVs are in `sample-data/` if you want to test without your
 own data, or just click a sample route in the app itself (the two corner
 routes, or the **Curved route** that shows arc detection). Samples are
 generated in feet.
+
+## GeoJSON import
+
+You can also drop a **GeoJSON** file of pipeline lines (for example a download from a government open-data portal). The app finds every `LineString` / `MultiLineString` feature, lets you pick one from a searchable list, and projects its longitude/latitude to UTM (`js/geojson.js`) in your chosen unit (feet or metres).
+
+GeoJSON holds the clean *centreline*, not noisy survey shots, so by default the app simulates a survey: one shot every 20-40 ft, each pushed up to half the pipe width off the line. Untick **Simulate survey shots** to feed the raw GeoJSON vertices in directly.
 
 ## Parameters
 

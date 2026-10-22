@@ -34,11 +34,21 @@
         <div class="block-title">01 &mdash; SURVEY IMPORT</div>
         <div class="block-body">
           <div class="dropzone" id="dropzone">
-            <div><strong>Drop as-built CSV</strong> or click to browse</div>
-            <div style="margin-top:4px; font-size:11.5px;">Point #, Description, X, Y (Z optional)</div>
-            <input type="file" id="fileInput" accept=".csv,text/csv">
+            <div><strong>Drop as-built CSV or GeoJSON</strong> or click to browse</div>
+            <div style="margin-top:4px; font-size:11.5px;">CSV: Point #, Description, X, Y (Z optional) &middot; GeoJSON: pipeline lines in lon/lat</div>
+            <input type="file" id="fileInput" accept=".csv,text/csv,.geojson,.json,application/geo+json,application/json">
           </div>
           <div class="filename" id="filename"></div>
+
+          <div id="geoPicker" style="display:none;">
+            <div class="maprow"><label>Find</label><input type="text" id="geoFilter" placeholder="company, type, status&hellip;" style="width:100%;"></div>
+            <div class="maprow"><label>Line</label><select id="geoSelect"></select></div>
+            <label style="display:flex; gap:8px; align-items:flex-start; margin:8px 0; font-size:12.5px;">
+              <input type="checkbox" id="geoNoise" checked>
+              <span>Simulate survey shots (one every 20&ndash;40 ft, up to &plusmn;&frac12; pipe width off the centreline). Untick to feed the clean GeoJSON vertices in directly.</span>
+            </label>
+            <div class="filename show" id="geoInfo"></div>
+          </div>
 
           <div id="mapping" style="display:none;">
             <div class="maprow"><label>X <span class="required-mark">*</span></label><select id="mapX"></select></div>

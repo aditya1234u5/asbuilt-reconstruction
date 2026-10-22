@@ -242,3 +242,7 @@ details.methodology li strong { color: var(--ink); }
   .table-scroll { max-height: none; overflow: visible; }
   a[href]::after { content: ""; }
 }
+
+/* GeoJSON line picker: long option labels must not push the panel wider */
+#geoPicker .maprow label { width: 52px; }
+#geoPicker .maprow select, #geoPicker .maprow input { flex: 1; min-width: 0; max-width: 100%; box-sizing: border-box; text-overflow: ellipsis; }

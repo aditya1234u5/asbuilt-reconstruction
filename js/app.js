@@ -3,11 +3,14 @@ import {
   detectArcs, toDXF, toLandXML,
   SAMPLE_CURVE_ROUTE, UNITS, pipeWidthInUnits
 } from './algorithm.js';
+import { extractLines, projectLine, polylineLength, simulateSurvey } from './geojson.js';
 
 /* ---------------- state ---------------- */
 let rawPoints = [];   // {x,y,z,pt,desc}
 let parsedRows = [];
 let headers = [];
+let geoLines = [];    // lines found in an imported GeoJSON file
+let geoActive = false; // true while the loaded data came from GeoJSON
 let result = null;
 let elements = [];        // line/arc elements from detectArcs(), used for rendering + export
 let draggedVertexIndex = -1;
@@ -44,8 +47,11 @@ const sampleCurveBtn = document.getElementById('sampleCurve');
 const unitSelect = document.getElementById('unitSelect');
 const arcToggle = document.getElementById('arcToggle');
 const autoTuneBtn = document.getElementById('autoTuneBtn');
+const geoPicker = document.getElementById('geoPicker'), geoSelect = document.getElementById('geoSelect'),
+      geoFilter = document.getElementById('geoFilter'), geoNoise = document.getElementById('geoNoise'),
+      geoInfo = document.getElementById('geoInfo');
 
-/* ---------------- CSV import ---------------- */
+/* ---------------- CSV / GeoJSON import ---------------- */
 dropzone.addEventListener('click', () => fileInput.click());
 ['dragover', 'dragenter'].forEach(evt => dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
 ['dragleave', 'drop'].forEach(evt => dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
@@ -55,6 +61,9 @@ fileInput.addEventListener('change', e => { const f = e.target.files[0]; if (f) 
 function handleFile(file) {
   filenameEl.textContent = file.name;
   filenameEl.classList.add('show');
+  if (/\.(geojson|json)$/i.test(file.name) || /json/i.test(file.type)) { handleGeoJSON(file); return; }
+  geoActive = false;
+  geoPicker.style.display = 'none';
   window.Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
@@ -68,6 +77,80 @@ function handleFile(file) {
     },
     error: err => alert('Could not parse that CSV: ' + err.message)
   });
+}
+
+/* ---- GeoJSON: lon/lat lines -> projected X/Y in the chosen survey unit ---- */
+const FT_PER_UNIT = { ft: 1, m: 1 / 0.3048 };   // feet in one survey unit
+const M_TO_UNIT = { ft: 1 / 0.3048, m: 1 };
+
+async function handleGeoJSON(file) {
+  let geo;
+  try { geo = JSON.parse(await file.text()); }
+  catch (err) { alert('Could not parse that GeoJSON: ' + err.message); return; }
+  const lines = extractLines(geo);
+  if (!lines.length) { alert('No LineString features found in that file.'); return; }
+  // Project once, up front, so each line's length is known for the picker.
+  geoLines = lines.map(l => {
+    const { points, zone } = projectLine(l.coords);
+    const lenFt = polylineLength(points) / 0.3048;
+    const p = l.props || {};
+    const label = `#${l.id} · ${p.PROPONENT || p.name || 'line'}${p.LINE_TYPE_DESC ? ' · ' + p.LINE_TYPE_DESC : ''}${p.STATUS ? ' · ' + p.STATUS : ''} · ${Math.round(lenFt).toLocaleString()} ft · ${points.length} pts`;
+    return { id: l.id, label, points, zone, lenFt };
+  }).filter(l => l.points.length >= 2);
+  headers = []; parsedRows = [];
+  mappingEl.style.display = 'none';
+  geoActive = true;
+  geoPicker.style.display = 'block';
+  geoFilter.value = '';
+  // Default to a mid-length line drawn as straight runs and corners (few vertices
+  // per foot, not a dense curve): long enough to have several bends, short enough
+  // to read on the plan view.
+  const pick = geoLines.filter(l => l.lenFt >= 3000 && l.lenFt < 20000 && l.points.length <= 60)
+    .sort((a, b) => b.lenFt - a.lenFt)[0]
+    || geoLines.filter(l => l.lenFt < 20000).sort((a, b) => b.lenFt - a.lenFt)[0] || geoLines[0];
+  fillGeoSelect(pick.id);
+  reconstructBtn.disabled = false;
+  autoTuneBtn.disabled = false;
+  refreshRawPoints();
+  runReconstruction();
+}
+
+// Lists up to 500 lines (longest first) matching the filter box. `selectId` is
+// always included and selected, even if it isn't among the longest 500.
+function fillGeoSelect(selectId = null) {
+  const q = geoFilter.value.trim().toLowerCase();
+  const matches = geoLines.filter(l => !q || l.label.toLowerCase().includes(q)).sort((a, b) => b.lenFt - a.lenFt);
+  const shown = matches.slice(0, 500);
+  const want = selectId || geoSelect.value;
+  const wanted = matches.find(l => l.id === want);
+  if (wanted && !shown.includes(wanted)) shown.unshift(wanted);
+  geoSelect.innerHTML = '';
+  shown.forEach(l => { const o = document.createElement('option'); o.value = l.id; o.textContent = l.label; geoSelect.appendChild(o); });
+  if (wanted) geoSelect.value = wanted.id;
+}
+
+function buildGeoPoints() {
+  const line = geoLines.find(l => l.id === geoSelect.value);
+  if (!line) { rawPoints = []; return; }
+  const unit = unitSelect.value;
+  let pts = line.points.map(p => ({ x: p.x * M_TO_UNIT[unit], y: p.y * M_TO_UNIT[unit] }));
+  if (geoNoise.checked) {
+    const widthU = pipeWidthInUnits(parseFloat(widthSlider.value), unit);
+    const ftU = 1 / FT_PER_UNIT[unit];           // one foot, in survey units
+    pts = simulateSurvey(pts, { minSpacing: 20 * ftU, maxSpacing: 40 * ftU, halfWidth: widthU / 2 });
+  }
+  rawPoints = pts.map((p, i) => ({ x: p.x, y: p.y, z: null, pt: String(i + 1), desc: 'CL PIPE' }));
+  geoInfo.textContent = `UTM zone ${line.zone}N · ${rawPoints.length} ${geoNoise.checked ? 'simulated shots' : 'GeoJSON vertices'} · ${Math.round(line.lenFt).toLocaleString()} ft`;
+}
+
+geoFilter.addEventListener('input', () => { fillGeoSelect(); if (geoSelect.value) { refreshRawPoints(); runReconstruction(); } });
+geoSelect.addEventListener('change', () => { refreshRawPoints(); runReconstruction(); });
+geoNoise.addEventListener('change', () => { refreshRawPoints(); runReconstruction(); });
+
+// Pulls fresh points from whichever source is active (GeoJSON line or mapped CSV columns).
+function refreshRawPoints() {
+  if (geoActive) buildGeoPoints();
+  else if (headers.length) buildRawPointsFromMapping();
 }
 
 function guessHeader(patterns) {
@@ -132,6 +215,8 @@ function loadSample(opts) {
   const pts = generateSyntheticRoute(o.route, o.spacing, o.noise, o.seed, 100, 0.01);
   rawPoints = pts.map((p, i) => ({ x: p.x, y: p.y, z: p.z, pt: String(i + 1), desc: 'CL PIPE' }));
   parsedRows = []; headers = [];
+  geoActive = false;
+  geoPicker.style.display = 'none';
   mappingEl.style.display = 'none';
   filenameEl.textContent = `synthetic ${o.widthIn}" ${o.name} (${pts.length} shots)`;
   filenameEl.classList.add('show');
@@ -159,13 +244,13 @@ updateParamLabels();
 // so re-run if a dataset is already loaded.
 unitSelect.addEventListener('change', () => {
   if (!rawPoints.length) return;
-  if (headers.length) buildRawPointsFromMapping();
+  refreshRawPoints();
   runReconstruction();
 });
 
 /* ---------------- run ---------------- */
 reconstructBtn.addEventListener('click', () => {
-  if (headers.length) buildRawPointsFromMapping();
+  refreshRawPoints();
   runReconstruction();
 });
 
@@ -290,7 +375,7 @@ printBtn.addEventListener('click', () => window.print());
 
 /* ---------------- auto-tune ---------------- */
 autoTuneBtn.addEventListener('click', () => {
-  if (headers.length) buildRawPointsFromMapping();
+  refreshRawPoints();
   if (!rawPoints.length) { alert('No valid X/Y points found — check your column mapping.'); return; }
   const widthFt = pipeWidthInUnits(parseFloat(widthSlider.value), unitSelect.value);
   const minPtsOptions = [3, 4, 5, 6, 7, 8];
