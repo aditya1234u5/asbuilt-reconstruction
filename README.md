@@ -7,7 +7,14 @@ single infinitesimal line. Turning that noisy point chain back into a clean
 polyline of straight runs and bends is normally 4-8 hours of manual work in
 CAD. This does it in a browser tab.
 
-**[Live demo](#)** — replace with your GitHub Pages URL once deployed (see below).
+[![Tests](https://github.com/aditya1234u5/asbuilt-reconstruction/actions/workflows/test.yml/badge.svg)](https://github.com/aditya1234u5/asbuilt-reconstruction/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**[Live demo](https://aditya1234u5.github.io/asbuilt-reconstruction/)** — runs entirely in your browser, no upload, no backend. Click **Sample route** to try it instantly.
+
+![As-Built Pipeline Reconstruction — 59 raw shots reduced to 5 vertices on the 8-inch sample route](docs/screenshot.png)
+
+*The 8″ sample route: 59 raw survey shots reduced to 5 vertices (92% reduction), max residual 2.87 ft, with the elevation profile underneath.*
 
 ## How it works
 
@@ -133,21 +140,9 @@ own data, or just click **Sample route** in the app itself.
   elevation profile, and both tables as a clean report; use the browser's
   "Save as PDF" destination in the print dialog.
 
-## Pushing to GitHub
+## Deployment
 
-```bash
-cd asbuilt-repo
-git init
-git add .
-git commit -m "As-built pipeline reconstruction"
-git branch -M main
-git remote add origin https://github.com/<your-username>/<repo-name>.git
-git push -u origin main
-```
-
-To host it for free with GitHub Pages: repo **Settings → Pages → Deploy from
-branch → main → / (root)**. It'll be live at
-`https://<your-username>.github.io/<repo-name>/` within a minute or two.
+The app is fully static, so GitHub Pages hosts it for free: repo **Settings → Pages → Deploy from branch → `main` → `/ (root)`**. It goes live at `https://<your-username>.github.io/<repo-name>/` within a minute or two.
 
 ## Background
 
