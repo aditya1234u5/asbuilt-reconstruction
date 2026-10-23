@@ -72,10 +72,12 @@ boundary.
 ├── js/
 │   ├── algorithm.js         reconstruction, arc detection, DXF/LandXML export — no DOM, unit-testable
 │   ├── geojson.js           GeoJSON line extraction, lon/lat → UTM projection, survey simulator — no DOM
+│   ├── fidelity.js          compares the result with the input line (both directions) — no DOM
 │   └── app.js                CSV import, parameters, canvas rendering, tables, export buttons
 ├── tests/
 │   ├── algorithm.test.js    unit tests (Node's built-in test runner, no dependency)
-│   └── geojson.test.js      GeoJSON import tests
+│   ├── geojson.test.js      GeoJSON import tests
+│   └── fidelity.test.js     fidelity-check tests
 ├── eval/
 │   └── evaluate.js          accuracy evaluation on synthetic routes with known ground truth
 ├── docs/
@@ -99,14 +101,14 @@ changes.
 npm test
 ```
 
-25 tests covering bearing/deflection math, RDP, PCA line fit, point
+37 tests covering bearing/deflection math, RDP, PCA line fit, point
 conservation (no raw shot is ever duplicated or lost across the whole
 pipeline), pipe-width sensitivity, stationing, elevation fit, circle fit,
 arc detection (it never fires on a route of isolated sharp corners, and on a
 true 400 ft-radius sweep it returns line + arc + line with the radius within
 5%), feet/metre conversion, both export formats, and the GeoJSON import
 (UTM projection checked against pyproj to under 1 mm, line extraction, and
-the deterministic survey simulator).
+the deterministic survey simulator), and the fidelity check below.
 
 ## Accuracy
 
@@ -117,6 +119,32 @@ synthetic-data only (see the caveats in that file), but it is a measured
 comparison rather than a claim. One finding worth knowing about: a correct
 vertex *count* does not guarantee correct geometry — see the
 "Which bends get missed?" table.
+
+## Fidelity check
+
+Under the result numbers the app shows a **GOOD FIT / CHECK / POOR FIT** badge
+answering one question: does the reconstructed line actually follow the line it
+was built from? It measures the distance between the two lines in **both
+directions** (a result that cuts corners *and* one that invents corners are
+both caught), sampled along the lines every ~10 ft rather than only at
+vertices, and shows mean distance, max distance, the share of the line more
+than 25 ft off, the length difference, and the average spacing of the input.
+
+- **What it compares against.** For a GeoJSON line, the original clean line
+  (so with simulated shots it reports the real recovery error on synthetic
+  noise). For CSV and the samples, the input shots joined in order.
+- **Why it exists.** The method needs shots every ~20–40 ft. Fed a sparse line
+  (one point every few hundred feet) it mistakes real corners for noise and
+  produces a confident-looking but wrong result — e.g. one BCER line with 33
+  vertices came back 7.5% short with the line up to 1,057 ft off. That now
+  shows as **POOR FIT** with the numbers.
+- **The thresholds are heuristics**, set by running the check over the sample
+  routes and dense BCER lines (all within 2% of the line off-tolerance and 1.1%
+  length difference) and over known-bad inputs (60–97% off-tolerance). CHECK
+  starts at 3% off-tolerance or 2% length difference; POOR at 10% or 5%. The
+  raw numbers are always shown so you can judge for yourself.
+- **Not ground truth for real data.** For real survey input it measures
+  fidelity to what you gave it, not accuracy against the real pipe.
 
 ## Running it locally
 

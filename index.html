@@ -113,6 +113,21 @@
           <div class="statcell"><div class="k">OUTLIERS DROPPED</div><div class="v warn" id="statOutliers">&mdash;</div></div>
           <div class="statcell"><div class="k">TOTAL LENGTH</div><div class="v" id="statLength">&mdash;</div></div>
         </div>
+        <div class="fidelity" id="fidelity" role="status" aria-live="polite" hidden>
+          <div class="fid-head"><span class="fid-badge" id="fidBadge"></span><span class="fid-title" id="fidTitle"></span></div>
+          <ul class="fid-reasons" id="fidReasons"></ul>
+          <table class="fid-table">
+            <thead><tr><th>FIDELITY CHECK</th><th>REF &rarr; RESULT</th><th>RESULT &rarr; REF</th></tr></thead>
+            <tbody>
+              <tr><td>Mean distance</td><td id="fidMeanA"></td><td id="fidMeanB"></td></tr>
+              <tr><td>Max distance</td><td id="fidMaxA"></td><td id="fidMaxB"></td></tr>
+              <tr><td id="fidFarLabel">Beyond tolerance</td><td id="fidFarA"></td><td id="fidFarB"></td></tr>
+              <tr><td>Length</td><td id="fidLenRef" colspan="2"></td></tr>
+              <tr><td>Avg. input spacing</td><td id="fidSpacing" colspan="2"></td></tr>
+            </tbody>
+          </table>
+          <div class="fid-basis" id="fidBasis"></div>
+        </div>
       </div>
 
       <div class="block">

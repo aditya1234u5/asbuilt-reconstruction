@@ -4,7 +4,7 @@
   "description": "As-built pipeline reconstruction \u2014 turns noisy survey CSV points into a clean polyline.",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/algorithm.test.js tests/geojson.test.js",
+    "test": "node --test tests/algorithm.test.js tests/geojson.test.js tests/fidelity.test.js",
     "start": "python3 -m http.server 8000",
     "eval": "node eval/evaluate.js"
   },

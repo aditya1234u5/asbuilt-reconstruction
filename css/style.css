@@ -7,6 +7,7 @@
   --blue: #3B6E8F;
   --graphite: #8B8C86;
   --amber: #B8862E;
+  --green: #3F7D4E;
   --line: rgba(35,37,32,0.16);
   --line-strong: rgba(35,37,32,0.32);
   box-sizing: border-box;
@@ -23,6 +24,7 @@
     --blue: #9FCCEE;
     --graphite: #9FB8CC;
     --amber: #E8C674;
+    --green: #7FD1A0;
     --line: rgba(234,242,250,0.16);
     --line-strong: rgba(234,242,250,0.34);
   }
@@ -36,6 +38,7 @@
   --blue: #9FCCEE;
   --graphite: #9FB8CC;
   --amber: #E8C674;
+  --green: #7FD1A0;
   --line: rgba(234,242,250,0.16);
   --line-strong: rgba(234,242,250,0.34);
 }
@@ -246,3 +249,25 @@ details.methodology li strong { color: var(--ink); }
 /* GeoJSON line picker: long option labels must not push the panel wider */
 #geoPicker .maprow label { width: 52px; }
 #geoPicker .maprow select, #geoPicker .maprow input { flex: 1; min-width: 0; max-width: 100%; box-sizing: border-box; text-overflow: ellipsis; }
+
+/* Fidelity check: does the result follow the input line? */
+.fidelity { border-top: 1px solid var(--line-strong); padding: 12px 14px 14px; border-left: 4px solid var(--graphite); }
+.fidelity[hidden] { display: none; }
+.fidelity.good  { border-left-color: var(--green); }
+.fidelity.check { border-left-color: var(--amber); }
+.fidelity.poor  { border-left-color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.fid-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fid-badge { font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; padding: 3px 8px; color: var(--paper); background: var(--graphite); }
+.fidelity.good  .fid-badge { background: var(--green); }
+.fidelity.check .fid-badge { background: var(--amber); }
+.fidelity.poor  .fid-badge { background: var(--red); }
+.fid-title { font-size: 13px; font-weight: 600; color: var(--ink); }
+.fidelity.poor .fid-title { color: var(--red); }
+.fid-reasons { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--ink-soft); }
+.fid-reasons li { margin-top: 3px; }
+.fid-basis { margin-top: 8px; font-size: 11.5px; color: var(--ink-soft); }
+.fid-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; }
+.fid-table th { text-align: right; font-weight: 500; color: var(--ink-soft); font-size: 9.5px; letter-spacing: 0.03em; padding: 3px 0; }
+.fid-table th:first-child, .fid-table td:first-child { text-align: left; }
+.fid-table td { text-align: right; padding: 3px 0; border-top: 1px solid var(--line); color: var(--ink); }
+.fid-table td:first-child { color: var(--ink-soft); }

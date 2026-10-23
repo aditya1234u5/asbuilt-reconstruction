@@ -4,6 +4,7 @@ import {
   SAMPLE_CURVE_ROUTE, UNITS, pipeWidthInUnits
 } from './algorithm.js';
 import { extractLines, projectLine, polylineLength, simulateSurvey } from './geojson.js';
+import { compareToReference, FEET } from './fidelity.js';
 
 /* ---------------- state ---------------- */
 let rawPoints = [];   // {x,y,z,pt,desc}
@@ -11,6 +12,7 @@ let parsedRows = [];
 let headers = [];
 let geoLines = [];    // lines found in an imported GeoJSON file
 let geoActive = false; // true while the loaded data came from GeoJSON
+let referenceLine = null; // clean GeoJSON centreline in survey units (ground truth for the fidelity check)
 let result = null;
 let elements = [];        // line/arc elements from detectArcs(), used for rendering + export
 let draggedVertexIndex = -1;
@@ -134,6 +136,7 @@ function buildGeoPoints() {
   if (!line) { rawPoints = []; return; }
   const unit = unitSelect.value;
   let pts = line.points.map(p => ({ x: p.x * M_TO_UNIT[unit], y: p.y * M_TO_UNIT[unit] }));
+  referenceLine = pts.map(p => ({ x: p.x, y: p.y }));   // compare the result against this, even when shots are simulated
   if (geoNoise.checked) {
     const widthU = pipeWidthInUnits(parseFloat(widthSlider.value), unit);
     const ftU = 1 / FT_PER_UNIT[unit];           // one foot, in survey units
@@ -279,9 +282,65 @@ function runReconstruction() {
   printBtn.disabled = false;
   renderVertexTable();
   renderQATable();
+  updateFidelity();
   resetView();
   draw();
   drawProfile();
+}
+
+/* ---------------- fidelity check ---------------- */
+// Does the result actually follow the line it was built from? Compared in both
+// directions, sampled along the lines (see js/fidelity.js). In GeoJSON mode the
+// reference is the original clean line, so with simulated shots this is the
+// real recovery error; otherwise it is the input shots joined in order.
+const fidelityEl = document.getElementById('fidelity');
+const FEET_TO_UNIT = { ft: 1, m: 0.3048 };
+const FID_TEXT = {
+  good:  ['GOOD FIT',  'The result follows the input line.'],
+  check: ['CHECK',     'The result deviates in places. Inspect the plan view before using it.'],
+  poor:  ['POOR FIT',  'The result does NOT follow the input line. Do not use it as it is.']
+};
+function updateFidelity() {
+  const useGeo = geoActive && referenceLine && referenceLine.length >= 2;
+  const reference = useGeo ? referenceLine : rawPoints.map(p => ({ x: p.x, y: p.y }));
+  if (!result || reference.length < 2 || result.vertices.length < 2) { fidelityEl.hidden = true; return; }
+
+  const unit = unitSelect.value, f = FEET_TO_UNIT[unit], u = unitLabel();
+  const c = compareToReference(reference, result.vertices, {
+    farTol: FEET.far * f, sampleStep: 10 * f, sparseTol: FEET.sparse * f,
+    inputPoints: rawPoints.map(p => ({ x: p.x, y: p.y }))
+  });
+
+  const dist = x => (x >= 100 ? x.toFixed(0) : x.toFixed(1)) + ' ' + u;
+  const pct = x => (100 * x).toFixed(0) + '%';
+  fidelityEl.className = 'fidelity ' + c.verdict;
+  document.getElementById('fidBadge').textContent = FID_TEXT[c.verdict][0];
+  document.getElementById('fidTitle').textContent = FID_TEXT[c.verdict][1];
+  const reasons = document.getElementById('fidReasons');
+  reasons.innerHTML = '';
+  // the sparse-input reason is shown below in a fuller form, so skip the short version here
+  c.reasons.filter(r => !/far apart/.test(r)).forEach(r => { const li = document.createElement('li'); li.textContent = '\u2022 ' + r; reasons.appendChild(li); });
+  if (c.sparse) {
+    const li = document.createElement('li');
+    li.textContent = `\u2022 Input points are about ${Math.round(c.spacing.mean / f).toLocaleString()} ft apart; this method expects shots every ~20\u201340 ft. Use denser data, or plain line simplification for sparse centrelines.`;
+    reasons.appendChild(li);
+  }
+  document.getElementById('fidMeanA').textContent = dist(c.refToResult.mean);
+  document.getElementById('fidMeanB').textContent = dist(c.resultToRef.mean);
+  document.getElementById('fidMaxA').textContent = dist(c.refToResult.max);
+  document.getElementById('fidMaxB').textContent = dist(c.resultToRef.max);
+  document.getElementById('fidFarLabel').textContent = `Beyond ${FEET.far} ft`;
+  document.getElementById('fidFarA').textContent = pct(c.refToResult.farFrac);
+  document.getElementById('fidFarB').textContent = pct(c.resultToRef.farFrac);
+  document.getElementById('fidLenRef').textContent =
+    `${Math.round(c.referenceLength).toLocaleString()} ${u} \u2192 ${Math.round(c.resultLength).toLocaleString()} ${u} (${c.lengthDiffPct >= 0 ? '+' : ''}${c.lengthDiffPct.toFixed(1)}%)`;
+  document.getElementById('fidSpacing').textContent = `${dist(c.spacing.mean)} (max ${dist(c.spacing.max)})`;
+  document.getElementById('fidBasis').textContent = useGeo
+    ? (geoNoise.checked
+        ? 'Reference = the original GeoJSON line (not the simulated shots), so this is the recovery error on synthetic noise.'
+        : 'Reference = the GeoJSON line you loaded.')
+    : `Reference = the ${rawPoints.length.toLocaleString()} input shots joined in order.`;
+  fidelityEl.hidden = false;
 }
 
 /* ---------------- vertex table ---------------- */
@@ -637,6 +696,7 @@ function recomputeAfterNudge() {
   // nudging a vertex on an arc just moves where the arc visually starts/ends)
   elements = arcToggle.checked ? elements : result.vertices.slice(0, -1).map((v, i) => ({ type: 'line', from: v, to: result.vertices[i + 1] }));
   renderVertexTable();
+  updateFidelity();
 }
 
 plotCanvas.addEventListener('pointerdown', e => {
