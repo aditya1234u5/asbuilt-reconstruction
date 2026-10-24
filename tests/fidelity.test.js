@@ -113,3 +113,16 @@ test('simulated shots compared against the CLEAN line give the real recovery err
   assert.equal(c.verdict, 'good');
   assert.ok(c.refToResult.mean < 5, `mean ${c.refToResult.mean}`);
 });
+
+test('judgeLength=false: a smooth result is not called "short" against a wiggly noisy reference', () => {
+  // reference = a straight 2,000 ft path walked with +/-8 ft zigzag every ~3 ft (noisy GPS fixes joined in order)
+  const wiggly = [], smooth = [{ x: 0, y: 0 }, { x: 2000, y: 0 }];
+  for (let i = 0; i <= 660; i++) wiggly.push({ x: i * 3.03, y: i % 2 ? 8 : -8 });
+  const strict = cmp(wiggly, smooth);
+  assert.ok(strict.lengthDiffPct < -50, `zigzag inflates the reference: ${strict.lengthDiffPct}`);
+  assert.equal(strict.verdict, 'poor');                     // judged on length, the good smooth line looks wrong
+  const lenient = compareToReference(wiggly, smooth, { ...OPTS, inputPoints: wiggly, judgeLength: false });
+  assert.equal(lenient.verdict, 'good');                    // judged on distance only, it is fine (8 ft off < 25 ft)
+  assert.ok(lenient.lengthDiffPct < -50);                   // the length is still reported
+  assert.ok(!lenient.reasons.some(r => /length/.test(r)));
+});

@@ -5,6 +5,12 @@ import {
   reconstruct, detectArcs, generateSyntheticRoute, pipeWidthInUnits,
   SAMPLE_TRUE_ROUTE, buildCurveRoute
 } from '../js/algorithm.js';
+import { compareToReference, FEET } from '../js/fidelity.js';
+import { autoTune } from '../js/autotune.js';
+import { parseGPX, trackCoordinates } from '../js/gpx.js';
+import { projectLine } from '../js/geojson.js';
+import { clipToSpan } from '../js/reference.js';
+import { effectiveWidth, farToleranceFt } from '../js/quality.js';
 
 const TRIALS = 50;
 const MATCH_TOL_FT = 15; // a true bend counts as "found" if a reconstructed vertex lies within this
@@ -90,7 +96,7 @@ for (const widthIn of [8, 24]) for (const outliers of [0, 1, 3, 5]) {
 }
 
 w('\n## 3. Arc detection on a curved route\n');
-w('Route: 250 ft straight, a true circular sweep of 90° at **R = 400 ft**, 250 ft straight. Shots every 10 ft, 8" pipe, bend threshold 3°, min points 3, arc detection on. "Line + arc + line" is the ideal outcome. Radius error is measured on the runs that produced exactly one arc.\n');
+w('Route: 250 ft straight, a true circular sweep of 90° at **R = 400 ft**, 250 ft straight. Shots every 10 ft, 8" pipe, bend threshold 6°, min points 5, arc detection on. "Line + arc + line" is the ideal outcome. Radius error is measured on the runs that produced exactly one arc.\n');
 w('| Noise ± (ft) | Line + arc + line | Any arc found | Median radius error | Worst radius error |');
 w('|---|---|---|---|---|');
 const curve = buildCurveRoute(400, 90, 7.5, 250);
@@ -98,7 +104,7 @@ for (const noise of [0.5, 1, 2]) {
   let ideal = 0, any = 0; const errs = [];
   for (let s = 1; s <= TRIALS; s++) {
     const raw = generateSyntheticRoute(curve, 10, noise, s, 100, 0.01);
-    const els = detectArcs(reconstruct(raw, pipeWidthInUnits(8, 'ft'), 3, 3));
+    const els = detectArcs(reconstruct(raw, pipeWidthInUnits(8, 'ft'), 6, 5));
     const arcs = els.filter(e => e.type === 'arc');
     if (arcs.length) any++;
     if (els.map(e => e.type[0]).join('') === 'lal') ideal++;
@@ -107,10 +113,71 @@ for (const noise of [0.5, 1, 2]) {
   w(`| ${noise} | ${pct(ideal, TRIALS)} | ${pct(any, TRIALS)} | ${errs.length ? (100 * median(errs)).toFixed(1) + '%' : 'n/a'} | ${errs.length ? (100 * Math.max(...errs)).toFixed(0) + '%' : 'n/a'} |`);
 }
 
+
+w('\n## 4. Gentle long curves, and what Auto-tune does about them\n');
+w('A 10° bend threshold merges a curve made of small bends into a few straight runs. Each row is a synthetic curve (24" pipe, shots every 40 ft). "Default" is 10° / 5 points; "Auto-tune" picks the fewest vertices that still follow the line (see `js/autotune.js`). "Off the line" is the share of the line more than 25 ft from the other line.\n');
+w('| Curve (radius, sweep) | Shots | Default verdict | Default off the line | Auto-tune setting | Auto-tune verdict | Auto-tune vertices |');
+w('|---|---|---|---|---|---|---|');
+for (const [R, sweep, step] of [[3000, 90, 2], [8000, 60, 1], [15000, 60, 1], [30000, 40, 0.5]]) {
+  const raw = generateSyntheticRoute(buildCurveRoute(R, sweep, step, 500), 40, 0.5, 2, 100, 0.01).map(p => ({ x: p.x, y: p.y }));
+  const d = compareToReference(raw, reconstruct(raw, pipeWidthInUnits(24, 'ft'), 10, 5).vertices, { farTol: FEET.far, sampleStep: 10, sparseTol: FEET.sparse, inputPoints: raw });
+  const { best } = autoTune(raw, raw, { widthUnits: pipeWidthInUnits(24, 'ft'), farTol: FEET.far, sampleStep: 10, sparseTol: FEET.sparse });
+  w(`| ${R / 1000} km, ${sweep}° | ${raw.length} | ${d.verdict} | ${(100 * d.worstFar).toFixed(0)}% | ${best.deflDeg}° / ${best.minPts} pts | ${best.verdict} | ${best.vertices} |`);
+}
+
+w('\n## 5. Synthetic phone-GPS walk (drifting error)\n');
+w('A 2.2 km path with a gentle bend and a sharp turn, walked at 1.4 m/s with 1 Hz fixes. Position error **drifts** rather than jumping around (autocorrelated, about 3 m sigma), which is how handheld GPS actually behaves. The track goes through the real GPX importer, is projected to UTM, and is compared with the true line. "Survey grade" uses only the 24" pipe-width tolerance; "Phone" adds the 15 ft noise floor. Auto-tune is run with the Phone setting. Mean distance is from the true line to the result.\n');
+w('| Setting | Seeds | Mean vertices | Verdict (good / check / poor) | Mean distance from true line (ft) |');
+w('|---|---|---|---|---|');
+{
+  const lat0 = 49.2, mlat = 111320, mlon = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const path = [[0, 0], [0, 600], [300, 900], [900, 900], [900, 1500]];
+  const TRUTH = path.map(([e, n]) => [-123 + e / mlon, lat0 + n / mlat]);
+  const gauss = r => Math.sqrt(-2 * Math.log(r() || 1e-12)) * Math.cos(2 * Math.PI * r());
+  const walk = (seed) => {
+    const r = rng(seed * 101), rho = 0.95, sg = 3 * Math.sqrt(1 - rho * rho), cum = [0];
+    for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
+    const out = []; let ex = 0, ey = 0, k = 0;
+    for (let d = 0; d <= cum.at(-1); d += 1.4) {
+      while (k < cum.length - 2 && cum[k + 1] < d) k++;
+      const t = (d - cum[k]) / (cum[k + 1] - cum[k]);
+      ex = rho * ex + sg * gauss(r); ey = rho * ey + sg * gauss(r);
+      out.push([-123 + (path[k][0] + (path[k + 1][0] - path[k][0]) * t + ex) / mlon, lat0 + (path[k][1] + (path[k + 1][1] - path[k][1]) * t + ey) / mlat]);
+    }
+    return out;
+  };
+  const gpxOf = pts => `<gpx><trk><trkseg>${pts.map(([lo, la]) => `<trkpt lat="${la.toFixed(8)}" lon="${lo.toFixed(8)}"/>`).join('')}</trkseg></trk></gpx>`;
+  const M2FT = 1 / 0.3048, N = 20;
+  const rowsBy = { survey: [], phone: [], tuned: [] };
+  for (let seed = 1; seed <= N; seed++) {
+    const track = parseGPX(gpxOf(walk(seed))).tracks[0];
+    const { points, zone } = projectLine(trackCoordinates(track));
+    const shots = points.map(p => ({ x: p.x * M2FT, y: p.y * M2FT }));
+    const ref = clipToSpan(projectLine(TRUTH, zone).points.map(p => ({ x: p.x * M2FT, y: p.y * M2FT })), shots[0], shots.at(-1));
+    for (const q of ['survey', 'phone']) {
+      const width = effectiveWidth(pipeWidthInUnits(24, 'ft'), q, 1);
+      const res = reconstruct(shots, width, 10, 5);
+      const c = compareToReference(ref, res.vertices, { farTol: farToleranceFt(q), sampleStep: 10, sparseTol: FEET.sparse, inputPoints: shots });
+      rowsBy[q].push({ v: res.vertices.length, verdict: c.verdict, mean: c.refToResult.mean });
+    }
+    const width = effectiveWidth(pipeWidthInUnits(24, 'ft'), 'phone', 1);
+    const { best } = autoTune(shots, ref, { widthUnits: width, farTol: farToleranceFt('phone'), sampleStep: 10, sparseTol: FEET.sparse });
+    rowsBy.tuned.push({ v: best.vertices, verdict: best.verdict, mean: best.cmp.refToResult.mean });
+  }
+  const line = (name, rows) => {
+    const n = v => rows.filter(r => r.verdict === v).length;
+    w(`| ${name} | ${rows.length} | ${mean(rows.map(r => r.v)).toFixed(0)} | ${n('good')} / ${n('check')} / ${n('poor')} | ${mean(rows.map(r => r.mean)).toFixed(1)} |`);
+  };
+  line('Survey grade, 10° / 5 pts', rowsBy.survey);
+  line('Phone, 10° / 5 pts', rowsBy.phone);
+  line('Phone + Auto-tune', rowsBy.tuned);
+  w('\nThe true path has 5 vertices. This is a synthetic model of GPS error, not field data.');
+}
+
 w('\n## Caveats\n');
 w('- **Synthetic data only.** The noise model is uniform sideways displacement; real crews also have systematic offsets, instrument error and non-uniform spacing. Treat these numbers as a controlled comparison, not a field accuracy claim.');
 w('- The route has a single geometry. Different bend angles and run lengths will shift the numbers.');
-w('- Parameters are the app defaults (or the curve-demo settings) with no per-trial tuning.');
+w('- Sections 1-3 use fixed settings (the app defaults, or the curve-demo settings) with no per-trial tuning; sections 4 and 5 also show what Auto-tune picks.');
 
 writeFileSync(new URL('../docs/EVALUATION.md', import.meta.url), out.join('\n') + '\n');
 console.log(out.join('\n'));

@@ -28,13 +28,16 @@ CAD. This does it in a browser tab.
 2. **Line fit** — each candidate segment is fit with total-least-squares
    (2D PCA), not ordinary `y = mx + b` regression, so it handles any
    orientation including near-vertical runs.
-3. **Bend merge** — neighboring segments are folded together, least-risky
-   pair first, whenever their deflection is under the major-bend threshold
-   (default 10°) **or** a segment doesn't yet have enough raw points for its
-   bearing to be trustworthy. That second condition is the fix for narrow
-   pipe: a 2-3 point segment can have a bearing that's wrong by 20-30°
-   purely from survey noise, and would otherwise get mistaken for a real
-   corner.
+3. **Bend merge** — neighboring segments are folded together whenever their
+   deflection is under the major-bend threshold (default 10°) **or** a segment
+   doesn't yet have enough raw points for its bearing to be trustworthy (a 2-3
+   point segment can have a bearing that's wrong by 20-30° purely from survey
+   noise). The merge **order** is by fit quality: the pair whose points are
+   best explained by a single straight line goes first. Ordering by
+   deflection instead is unreliable early on, when segments hold only 1-2
+   shots and their bearings mean nothing; that let an under-sampled piece be
+   forced into the wrong neighbour across a real corner. Fixing it cut lost
+   bends from about 7% of true bends to under 0.5% (see the evaluation).
 4. **Outlier rejection** — a robust, MAD-based check per segment flags shots
    sitting far outside *that segment's own* noise level (equipment error,
    not routine meander) and refits without them.
@@ -52,8 +55,7 @@ CAD. This does it in a browser tab.
    the fit. This is a post-process over whatever vertices the main pipeline
    already produced — if a high "min points per segment" setting already
    merged part of a curve into an adjacent straight run, the detected arc can
-   still bleed slightly into it. Lowering that setting before reconstructing
-   preserves more bend resolution for a tighter fit. Off by default; enable
+   still bleed slightly into it. Off by default; enable
    with the "Detect long-radius curves" checkbox, or click **Curved route**
    to see it work.
 
@@ -72,12 +74,21 @@ boundary.
 ├── js/
 │   ├── algorithm.js         reconstruction, arc detection, DXF/LandXML export — no DOM, unit-testable
 │   ├── geojson.js           GeoJSON line extraction, lon/lat → UTM projection, survey simulator — no DOM
-│   ├── fidelity.js          compares the result with the input line (both directions) — no DOM
+│   ├── fidelity.js          compares the result with a reference line (both directions) — no DOM
+│   ├── autotune.js          picks the fewest vertices that still follow the line — no DOM
+│   ├── gpx.js               GPX track/route parser, tolerant of truncated files — no DOM
+│   ├── reference.js         find the right reference line and trim it to your track — no DOM
+│   ├── quality.js           survey-quality presets (noise floor for GPS drift) — no DOM
 │   └── app.js                CSV import, parameters, canvas rendering, tables, export buttons
 ├── tests/
 │   ├── algorithm.test.js    unit tests (Node's built-in test runner, no dependency)
 │   ├── geojson.test.js      GeoJSON import tests
-│   └── fidelity.test.js     fidelity-check tests
+│   ├── fidelity.test.js     fidelity-check tests
+│   ├── autotune.test.js     auto-tune tests
+│   ├── gpx.test.js          GPX parser tests
+│   ├── reference.test.js    reference matching / trimming tests
+│   ├── quality.test.js      survey-quality preset tests
+│   └── gpx-pipeline.test.js end-to-end: synthetic phone-GPS walk -> GPX -> result vs reference
 ├── eval/
 │   └── evaluate.js          accuracy evaluation on synthetic routes with known ground truth
 ├── docs/
@@ -101,24 +112,28 @@ changes.
 npm test
 ```
 
-37 tests covering bearing/deflection math, RDP, PCA line fit, point
+70 tests covering bearing/deflection math, RDP, PCA line fit, point
 conservation (no raw shot is ever duplicated or lost across the whole
 pipeline), pipe-width sensitivity, stationing, elevation fit, circle fit,
-arc detection (it never fires on a route of isolated sharp corners, and on a
-true 400 ft-radius sweep it returns line + arc + line with the radius within
-5%), feet/metre conversion, both export formats, and the GeoJSON import
-(UTM projection checked against pyproj to under 1 mm, line extraction, and
-the deterministic survey simulator), and the fidelity check below.
+arc detection, regression tests for the lost-corner bug (with and without
+gross outliers), feet/metre conversion, both export formats, the GeoJSON
+import (UTM projection checked against pyproj to under 1 mm), the GPX parser
+(including truncated files), reference-line matching and trimming, the
+survey-quality presets, the fidelity check, Auto-tune, and an end-to-end
+phone-GPS walk.
 
 ## Accuracy
 
 `npm run eval` runs the pipeline on synthetic routes with known ground truth
-across noise levels, pipe widths, injected gross outliers and a curved route,
-and writes the results to [`docs/EVALUATION.md`](docs/EVALUATION.md). It is
-synthetic-data only (see the caveats in that file), but it is a measured
-comparison rather than a claim. One finding worth knowing about: a correct
-vertex *count* does not guarantee correct geometry — see the
-"Which bends get missed?" table.
+and writes the results to [`docs/EVALUATION.md`](docs/EVALUATION.md): noise
+levels and pipe widths, injected gross outliers, a curved route, gentle long
+curves (default settings versus Auto-tune), and a synthetic phone-GPS walk
+with drifting error. It is synthetic data only (see the caveats in that
+file), but it is a measured comparison rather than a claim. Headlines at the
+default settings: no true bend is lost in 200 runs of the corner route at 8"
+pipe (600 bend checks), and on the curved demo the ideal line + arc + line comes out 100% of
+the time at 0.5-2 ft noise. A correct vertex *count* still does not guarantee
+correct geometry, which is why the check below exists.
 
 ## Fidelity check
 
@@ -178,7 +193,39 @@ generated in feet.
 
 You can also drop a **GeoJSON** file of pipeline lines (for example a download from a government open-data portal). The app finds every `LineString` / `MultiLineString` feature, lets you pick one from a searchable list, and projects its longitude/latitude to UTM (`js/geojson.js`) in your chosen unit (feet or metres).
 
-GeoJSON holds the clean *centreline*, not noisy survey shots, so by default the app simulates a survey: one shot every 20-40 ft, each pushed up to half the pipe width off the line. Untick **Simulate survey shots** to feed the raw GeoJSON vertices in directly.
+GeoJSON holds the clean *centreline*, not noisy survey shots, so by default the app simulates a survey: one shot every 20-40 ft, each pushed up to half the pipe width off the line. Untick **Simulate survey shots** to feed the raw GeoJSON vertices in directly. That only works for lines whose vertices are close together (the picker shows each line's average spacing as "ft apart"); for a sparse line the app says so and offers a **Jump to a dense line** button.
+
+## GPX tracks and reference lines (real GPS data)
+
+Drop a **GPX** file from a phone or GPS logger. The app reads the track (or
+route), projects it to UTM, and reconstructs it like any other survey. Files
+cut short by a crashed logger still load: whatever points were recorded are
+used.
+
+- **Survey quality.** Survey-grade shots are good to an inch or two, so pipe
+  width alone sets the noise tolerance. A phone is typically 3-5 m (10-16 ft)
+  off, and that error *drifts* rather than jumping around, so at survey-grade
+  tolerance it is read as real bends. The **Survey quality** control adds a
+  noise floor (mapping-grade about 1 ft, phone about 15 ft); loading a GPX
+  switches it to *phone* automatically.
+- **Reference line (optional, and what makes the result a measurement).** Load
+  a GeoJSON of the official centreline for the road or pipe you walked. The app
+  picks the line nearest your track, trims it to the stretch you actually
+  covered, and the fidelity check then reports real distance from that line.
+  You can choose another candidate from the list.
+- **Auto-tune** picks the setting that gives the fewest vertices while still
+  following the reference.
+
+![A synthetic phone-GPS walk with the real BCER centreline loaded as the reference](docs/screenshot-gpx.png)
+
+*A synthetic phone-GPS walk (5,011 fixes) with a 6,161-line BCER GeoJSON loaded as the reference: the nearest line is found automatically, trimmed to the walked stretch, and the result is rated GOOD FIT. The walk is simulated, not a real recording.*
+
+On a *synthetic* phone-GPS walk (drifting 3 m error, 5 true vertices),
+survey-grade tolerance gave 127 vertices on average and 16 of 20 results rated
+POOR; the phone setting gave 46 and 17 of 20 GOOD; with Auto-tune, 19 vertices
+and 20 of 20 GOOD. See section 5 of [`docs/EVALUATION.md`](docs/EVALUATION.md).
+That is a model of GPS error, not field data: run a real walk before relying
+on it.
 
 ## Parameters
 
@@ -186,9 +233,10 @@ GeoJSON holds the clean *centreline*, not noisy survey shots, so by default the 
 |---|---|
 | **Pipe width** | Sets the RDP tolerance (half the width). Wider pipe → more forgiving. |
 | **Major bend threshold** | Deflection at or above this angle is kept as a real corner. |
-| **Min. points per segment** | A segment built from fewer shots than this doesn't get to "vote" on a bend — it's folded into whichever neighbor is the smaller deflection away. |
+| **Min. points per segment** | A segment built from fewer shots than this doesn't get to "vote" on a bend; it is folded into whichever neighbour its points fit best. |
+| **Survey quality** | Adds a noise floor for GPS drift (see the GPX section). Survey grade = pipe width only. |
 | **Detect long-radius curves** | Optional. Groups consecutive moderate bends into a fitted arc instead of sharp corners — see "Curve detection" above. |
-| **Auto-tune parameters** | Grid-searches min-points × bend-threshold combinations and applies whichever gives the lowest average per-segment residual (with a mild penalty for an unreasonably low or high vertex count), instead of you hand-tuning sliders. |
+| **Auto-tune parameters** | Tries 66 bend-threshold × min-points combinations (1-20°, 3-8 points) and applies the one with the **fewest vertices that still follow the line**, judged by the fidelity check. If nothing follows the line well it says so and shows the least bad. (It used to minimise the average segment residual, which rewards over-segmentation.) |
 
 ## Other features
 
@@ -205,18 +253,25 @@ GeoJSON holds the clean *centreline*, not noisy survey shots, so by default the 
 
 ## Limitations
 
-- **Short runs between bends can be absorbed.** In the evaluation, ~10% of
-  trials lost the corner at each end of the route's shortest (260 ft) run at
-  default settings, even though the vertex count was still right. Check the
-  geometry, not just the vertex count, on routes with short runs between
-  bends.
-- **Arc detection is a heuristic.** The tangent trim uses a length rule
-  (an end run more than 2× the median chord is treated as a tangent). On the
-  curved demo with noise of ±1 ft, about 84% of trials gave the ideal
-  line + arc + line, and the worst fitted radius was 20% off.
+- **It needs shots every ~20-40 ft.** Fed a sparse line (a point every few
+  hundred feet) it mistakes real corners for noise and gives a confident but
+  wrong result. The fidelity check flags this as POOR FIT rather than letting
+  it pass, and no Auto-tune setting can fix missing data.
+- **Gentle long curves need a finer bend threshold than the default 10°**,
+  otherwise each small bend is absorbed and the curve is flattened (e.g. a 15
+  km-radius curve: 48% of the line more than 25 ft off at the default, fixed
+  by Auto-tune picking 5°). Auto-tune does this for you.
+- **Arc detection is a heuristic.** Its tangent trim uses a length rule (an end
+  run more than 2× the median chord is treated as a tangent). On the curved
+  demo it gave the ideal line + arc + line in every trial at ±0.5-2 ft noise,
+  but that is one geometry.
+- **Verdict thresholds are heuristics**, calibrated on the sample routes and
+  dense BCER lines; the raw numbers are always shown.
+- **GPS-error model.** The phone-GPS results use a synthetic drifting-error
+  model, not field data. No real survey or GPS track has been run through it
+  yet.
 - Single route, 2D plan geometry (elevation is fitted per segment but does not
   affect bend detection), no loops or branches.
-- Validated on synthetic data only; no field data has been run through it.
 
 ## Deployment
 

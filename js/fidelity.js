@@ -92,11 +92,15 @@ export function spacingStats(points) {
  * @param opts.sampleStep spacing (in point units) for sampling along the lines
  * @param opts.inputPoints optional [{x,y}] the actual input shots, for the sparse-input check
  * @param opts.sparseTol average input spacing above this triggers the sparse warning
+ * @param opts.maxSamples cap on samples per line (default 3000; lower = faster, used by auto-tune)
+ * @param opts.judgeLength set false when the reference is a NOISY track joined in order: its zigzag makes it
+ *        longer than the real path, so a smooth result would wrongly look "short". The length is still
+ *        reported, just not used in the verdict.
  */
 export function compareToReference(reference, resultVertices, opts) {
-  const { farTol, sampleStep, inputPoints = reference, sparseTol } = opts;
-  const refSamples = densify(reference, sampleStep);
-  const resSamples = densify(resultVertices, sampleStep);
+  const { farTol, sampleStep, inputPoints = reference, sparseTol, maxSamples = 3000, judgeLength = true } = opts;
+  const refSamples = densify(reference, sampleStep, maxSamples);
+  const resSamples = densify(resultVertices, sampleStep, maxSamples);
   const refToResult = summarize(refSamples, resultVertices, farTol);
   const resultToRef = summarize(resSamples, reference, farTol);
   const referenceLength = polylineLength(reference);
@@ -109,17 +113,17 @@ export function compareToReference(reference, resultVertices, opts) {
   const reasons = [];
   if (worstFar >= POOR.farFrac) reasons.push(`${pct(worstFar)} of the line is more than the tolerance from the other line`);
   else if (worstFar >= CHECK.farFrac) reasons.push(`${pct(worstFar)} of the line is more than the tolerance from the other line`);
-  if (Math.abs(lengthDiffPct) >= POOR.lengthPct) reasons.push(`total length differs by ${lengthDiffPct.toFixed(1)}%`);
-  else if (Math.abs(lengthDiffPct) >= CHECK.lengthPct) reasons.push(`total length differs by ${lengthDiffPct.toFixed(1)}%`);
+  const lenFlag = judgeLength ? Math.abs(lengthDiffPct) : 0;
+  if (lenFlag >= CHECK.lengthPct) reasons.push(`total length differs by ${lengthDiffPct.toFixed(1)}%`);
   if (sparse) reasons.push('the input points are very far apart for this method');
 
   let verdict = 'good';
-  if (worstFar >= CHECK.farFrac || Math.abs(lengthDiffPct) >= CHECK.lengthPct || sparse) verdict = 'check';
-  if (worstFar >= POOR.farFrac || Math.abs(lengthDiffPct) >= POOR.lengthPct) verdict = 'poor';
+  if (worstFar >= CHECK.farFrac || lenFlag >= CHECK.lengthPct || sparse) verdict = 'check';
+  if (worstFar >= POOR.farFrac || lenFlag >= POOR.lengthPct) verdict = 'poor';
 
   return {
-    verdict, reasons, sparse, spacing,
-    referenceLength, resultLength, lengthDiffPct,
+    verdict, reasons, sparse, spacing, worstFar,
+    referenceLength, resultLength, lengthDiffPct, judgeLength,
     refToResult, resultToRef, farTol
   };
 }

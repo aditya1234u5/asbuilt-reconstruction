@@ -71,11 +71,12 @@ export function extractLines(geo) {
   return out;
 }
 
-/** Project a lon/lat line to metres in the UTM zone of its midpoint.
- *  Consecutive duplicate vertices are dropped. */
-export function projectLine(coords) {
+/** Project a lon/lat line to metres in the UTM zone of its midpoint (or in
+ *  `forceZone`, so a reference line can share a track's zone and the two are
+ *  directly comparable). Consecutive duplicate vertices are dropped. */
+export function projectLine(coords, forceZone = null) {
   const mid = coords[Math.floor(coords.length / 2)];
-  const zone = utmZone(mid[0]);
+  const zone = forceZone || utmZone(mid[0]);
   const lon0 = zoneCentralMeridian(zone);
   const pts = [];
   for (const [lon, lat] of coords) {

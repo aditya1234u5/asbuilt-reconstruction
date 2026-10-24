@@ -248,7 +248,7 @@ details.methodology li strong { color: var(--ink); }
 
 /* GeoJSON line picker: long option labels must not push the panel wider */
 #geoPicker .maprow label { width: 52px; }
-#geoPicker .maprow select, #geoPicker .maprow input { flex: 1; min-width: 0; max-width: 100%; box-sizing: border-box; text-overflow: ellipsis; }
+#geoPicker .maprow select, #geoPicker .maprow input, #refPicker .maprow select { flex: 1; min-width: 0; max-width: 100%; box-sizing: border-box; text-overflow: ellipsis; }
 
 /* Fidelity check: does the result follow the input line? */
 .fidelity { border-top: 1px solid var(--line-strong); padding: 12px 14px 14px; border-left: 4px solid var(--graphite); }
@@ -271,3 +271,7 @@ details.methodology li strong { color: var(--ink); }
 .fid-table th:first-child, .fid-table td:first-child { text-align: left; }
 .fid-table td { text-align: right; padding: 3px 0; border-top: 1px solid var(--line); color: var(--ink); }
 .fid-table td:first-child { color: var(--ink-soft); }
+
+.geo-hint { margin-top: 8px; font-size: 12px; color: var(--red); }
+.geo-hint[hidden] { display: none; }
+.geo-hint .btn { margin-top: 6px; width: 100%; }

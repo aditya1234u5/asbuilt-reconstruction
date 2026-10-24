@@ -34,9 +34,9 @@
         <div class="block-title">01 &mdash; SURVEY IMPORT</div>
         <div class="block-body">
           <div class="dropzone" id="dropzone">
-            <div><strong>Drop as-built CSV or GeoJSON</strong> or click to browse</div>
-            <div style="margin-top:4px; font-size:11.5px;">CSV: Point #, Description, X, Y (Z optional) &middot; GeoJSON: pipeline lines in lon/lat</div>
-            <input type="file" id="fileInput" accept=".csv,text/csv,.geojson,.json,application/geo+json,application/json">
+            <div><strong>Drop as-built CSV, GeoJSON or GPX</strong> or click to browse</div>
+            <div style="margin-top:4px; font-size:11.5px;">CSV: Point #, Description, X, Y (Z optional) &middot; GeoJSON: pipeline lines in lon/lat &middot; GPX: a phone or GPS-logger track</div>
+            <input type="file" id="fileInput" accept=".csv,text/csv,.geojson,.json,.gpx,application/geo+json,application/json,application/gpx+xml">
           </div>
           <div class="filename" id="filename"></div>
 
@@ -48,6 +48,18 @@
               <span>Simulate survey shots (one every 20&ndash;40 ft, up to &plusmn;&frac12; pipe width off the centreline). Untick to feed the clean GeoJSON vertices in directly.</span>
             </label>
             <div class="filename show" id="geoInfo"></div>
+            <div class="geo-hint" id="geoHint" role="status" hidden>
+              <span id="geoHintText"></span>
+              <button type="button" class="btn secondary" id="geoDenseBtn">Jump to a dense line</button>
+            </div>
+          </div>
+
+          <div id="refPicker" style="display:none;">
+            <div class="filename show" id="gpxInfo"></div>
+            <div class="maprow"><label>Reference</label><button type="button" class="btn secondary" id="refBtn" style="flex:1;">Load reference line (GeoJSON)&hellip;</button></div>
+            <input type="file" id="refInput" accept=".geojson,.json,application/geo+json,application/json" style="display:none;">
+            <div class="maprow" id="refLineRow" style="display:none;"><label>Line</label><select id="refSelect"></select></div>
+            <div class="filename show" id="refInfo"></div>
           </div>
 
           <div id="mapping" style="display:none;">
@@ -80,13 +92,22 @@
             <div class="param-note">Units of the X/Y coordinates in your CSV. Pipe width stays in inches and is converted for you.</div>
           </div>
           <div class="param">
+            <div class="param-head"><label for="qualitySelect">Survey quality</label></div>
+            <select id="qualitySelect" class="unit-select">
+              <option value="survey">Survey grade (RTK / total station)</option>
+              <option value="mapping">Mapping-grade GNSS (about 1 ft)</option>
+              <option value="phone">Phone / handheld GPS (about 15 ft)</option>
+            </select>
+            <div class="param-note">How noisy your shots are. Adds a noise floor so GPS drift is not read as real bends. Survey grade uses the pipe-width tolerance only.</div>
+          </div>
+          <div class="param">
             <div class="param-head"><label>Pipe width</label><span class="val" id="widthVal">24 in</span></div>
             <input type="range" id="widthSlider" min="4" max="60" step="1" value="24">
             <div class="param-note">Sets the noise tolerance (half the pipe width) &mdash; wider pipe forgives more survey meander before treating it as a real bend.</div>
           </div>
           <div class="param">
             <div class="param-head"><label>Major bend threshold</label><span class="val" id="deflVal">10&deg;</span></div>
-            <input type="range" id="deflSlider" min="2" max="30" step="1" value="10">
+            <input type="range" id="deflSlider" min="1" max="30" step="1" value="10">
             <div class="param-note">Deflection at or above this angle is kept as a corner; anything under it gets absorbed into a straight run.</div>
           </div>
           <div class="param">
@@ -100,6 +121,7 @@
           </div>
           <button class="btn" id="reconstructBtn" disabled>Reconstruct</button>
           <button class="btn secondary" id="autoTuneBtn" disabled>Auto-tune parameters</button>
+          <div class="param-note" id="tuneNote" role="status" style="margin-top:8px;"></div>
         </div>
       </div>
 

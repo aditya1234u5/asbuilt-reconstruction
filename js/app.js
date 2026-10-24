@@ -5,6 +5,10 @@ import {
 } from './algorithm.js';
 import { extractLines, projectLine, polylineLength, simulateSurvey } from './geojson.js';
 import { compareToReference, FEET } from './fidelity.js';
+import { autoTune } from './autotune.js';
+import { parseGPX, trackCoordinates } from './gpx.js';
+import { clipToSpan, rankLinesByProximity } from './reference.js';
+import { effectiveWidth, farToleranceFt } from './quality.js';
 
 /* ---------------- state ---------------- */
 let rawPoints = [];   // {x,y,z,pt,desc}
@@ -12,7 +16,12 @@ let parsedRows = [];
 let headers = [];
 let geoLines = [];    // lines found in an imported GeoJSON file
 let geoActive = false; // true while the loaded data came from GeoJSON
-let referenceLine = null; // clean GeoJSON centreline in survey units (ground truth for the fidelity check)
+let referenceLine = null; // line the fidelity check compares against, in survey units (GeoJSON centreline or a loaded reference)
+let referenceLabel = '';  // name of that reference, for the panel
+let gpxActive = false;    // true while the loaded data is a GPX track
+let gpxZone = null;       // UTM zone of the loaded track (reference lines are projected into the same zone)
+let gpxMeters = [];       // the track projected to UTM metres
+let refLines = [];        // candidate reference lines, nearest to the track first (metres)
 let result = null;
 let elements = [];        // line/arc elements from detectArcs(), used for rendering + export
 let draggedVertexIndex = -1;
@@ -49,6 +58,13 @@ const sampleCurveBtn = document.getElementById('sampleCurve');
 const unitSelect = document.getElementById('unitSelect');
 const arcToggle = document.getElementById('arcToggle');
 const autoTuneBtn = document.getElementById('autoTuneBtn');
+const qualitySelect = document.getElementById('qualitySelect'), tuneNote = document.getElementById('tuneNote');
+const refPicker = document.getElementById('refPicker'), refBtn = document.getElementById('refBtn'),
+      refInput = document.getElementById('refInput'), refSelect = document.getElementById('refSelect'),
+      refLineRow = document.getElementById('refLineRow'), refInfo = document.getElementById('refInfo'),
+      gpxInfo = document.getElementById('gpxInfo');
+const geoHint = document.getElementById('geoHint'), geoHintText = document.getElementById('geoHintText'),
+      geoDenseBtn = document.getElementById('geoDenseBtn');
 const geoPicker = document.getElementById('geoPicker'), geoSelect = document.getElementById('geoSelect'),
       geoFilter = document.getElementById('geoFilter'), geoNoise = document.getElementById('geoNoise'),
       geoInfo = document.getElementById('geoInfo');
@@ -60,12 +76,23 @@ dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) handleFile(f); });
 fileInput.addEventListener('change', e => { const f = e.target.files[0]; if (f) handleFile(f); });
 
+// Every loader starts from a clean slate so state from a previous source never leaks.
+function resetSources() {
+  if (gpxActive && qualitySelect.value === 'phone') qualitySelect.value = 'survey';   // the phone preset belongs to the GPX session
+  geoActive = false; gpxActive = false;
+  referenceLine = null; referenceLabel = ''; refLines = [];
+  geoPicker.style.display = 'none'; refPicker.style.display = 'none'; geoHint.hidden = true;
+  tuneNote.textContent = '';
+  // Auto-tuned values belong to the dataset they were tuned on; a new file starts from the defaults.
+  deflSlider.value = 10; minPtsSlider.value = 5; updateParamLabels();
+}
+
 function handleFile(file) {
   filenameEl.textContent = file.name;
   filenameEl.classList.add('show');
+  if (/\.gpx$/i.test(file.name) || /gpx/i.test(file.type)) { handleGPX(file); return; }
   if (/\.(geojson|json)$/i.test(file.name) || /json/i.test(file.type)) { handleGeoJSON(file); return; }
-  geoActive = false;
-  geoPicker.style.display = 'none';
+  resetSources();
   window.Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
@@ -96,9 +123,11 @@ async function handleGeoJSON(file) {
     const { points, zone } = projectLine(l.coords);
     const lenFt = polylineLength(points) / 0.3048;
     const p = l.props || {};
-    const label = `#${l.id} · ${p.PROPONENT || p.name || 'line'}${p.LINE_TYPE_DESC ? ' · ' + p.LINE_TYPE_DESC : ''}${p.STATUS ? ' · ' + p.STATUS : ''} · ${Math.round(lenFt).toLocaleString()} ft · ${points.length} pts`;
-    return { id: l.id, label, points, zone, lenFt };
+    const spacingFt = lenFt / Math.max(1, points.length - 1);   // average gap between vertices
+    const label = `#${l.id} · ${p.PROPONENT || p.name || 'line'}${p.LINE_TYPE_DESC ? ' · ' + p.LINE_TYPE_DESC : ''}${p.STATUS ? ' · ' + p.STATUS : ''}${p.DATA_SOURCE ? ' · ' + p.DATA_SOURCE : ''} · ${Math.round(lenFt).toLocaleString()} ft · ${points.length} pts · ${Math.round(spacingFt).toLocaleString()} ft apart`;
+    return { id: l.id, label, points, zone, lenFt, spacingFt };
   }).filter(l => l.points.length >= 2);
+  resetSources();
   headers = []; parsedRows = [];
   mappingEl.style.display = 'none';
   geoActive = true;
@@ -115,6 +144,7 @@ async function handleGeoJSON(file) {
   autoTuneBtn.disabled = false;
   refreshRawPoints();
   runReconstruction();
+  updateGeoHint();
 }
 
 // Lists up to 500 lines (longest first) matching the filter box. `selectId` is
@@ -146,14 +176,113 @@ function buildGeoPoints() {
   geoInfo.textContent = `UTM zone ${line.zone}N · ${rawPoints.length} ${geoNoise.checked ? 'simulated shots' : 'GeoJSON vertices'} · ${Math.round(line.lenFt).toLocaleString()} ft`;
 }
 
-geoFilter.addEventListener('input', () => { fillGeoSelect(); if (geoSelect.value) { refreshRawPoints(); runReconstruction(); } });
-geoSelect.addEventListener('change', () => { refreshRawPoints(); runReconstruction(); });
-geoNoise.addEventListener('change', () => { refreshRawPoints(); runReconstruction(); });
+geoFilter.addEventListener('input', () => { fillGeoSelect(); if (geoSelect.value) { refreshRawPoints(); runReconstruction(); updateGeoHint(); } });
+geoSelect.addEventListener('change', () => { refreshRawPoints(); runReconstruction(); updateGeoHint(); });
+geoNoise.addEventListener('change', () => { refreshRawPoints(); runReconstruction(); updateGeoHint(); });
+
+// Without simulated shots a sparse line (vertices hundreds of feet apart) cannot
+// be reconstructed reliably, so say so and offer a line that can.
+const denseCandidate = () => geoLines
+  .filter(l => l.points.length >= 60 && l.spacingFt <= 50 && l.lenFt >= 1000 && l.lenFt <= 25000)
+  .sort((a, b) => b.lenFt - a.lenFt)[0];
+function updateGeoHint() {
+  const line = geoLines.find(l => l.id === geoSelect.value);
+  const show = geoActive && !geoNoise.checked && line && line.spacingFt > FEET.sparse;
+  geoHint.hidden = !show;
+  if (!show) return;
+  const dense = denseCandidate();
+  geoHintText.textContent = `This line's vertices are about ${Math.round(line.spacingFt).toLocaleString()} ft apart, too sparse to reconstruct without simulated shots. ` +
+    (dense ? 'Pick a line with a small "ft apart" value, or:' : 'This file has no dense lines; tick the simulation box.');
+  geoDenseBtn.style.display = dense ? '' : 'none';
+}
+geoDenseBtn.addEventListener('click', () => {
+  const d = denseCandidate(); if (!d) return;
+  geoFilter.value = ''; fillGeoSelect(d.id);
+  refreshRawPoints(); runReconstruction(); updateGeoHint();
+});
 
 // Pulls fresh points from whichever source is active (GeoJSON line or mapped CSV columns).
 function refreshRawPoints() {
   if (geoActive) buildGeoPoints();
+  else if (gpxActive) buildGpxPoints();
   else if (headers.length) buildRawPointsFromMapping();
+}
+
+/* ---- GPX track (+ optional reference line) ---- */
+async function handleGPX(file) {
+  let parsed;
+  try { parsed = parseGPX(await file.text()); }
+  catch (err) { alert('Could not read that GPX file: ' + err.message); return; }
+  if (!parsed.tracks.length) { alert('No track or route points found in that GPX file.'); return; }
+  // Use the longest track if the file holds several.
+  const track = parsed.tracks.slice().sort((a, b) => b.points.length - a.points.length)[0];
+  const { points, zone } = projectLine(trackCoordinates(track));
+  if (points.length < 3) { alert('That track has fewer than 3 distinct points.'); return; }
+  resetSources();
+  headers = []; parsedRows = [];
+  mappingEl.style.display = 'none';
+  gpxActive = true; gpxZone = zone; gpxMeters = points;
+  refPicker.style.display = 'block';
+  refLineRow.style.display = 'none';
+  const km = polylineLength(points) / 1000;
+  gpxInfo.textContent = `${track.name} \u00b7 ${points.length.toLocaleString()} fixes \u00b7 ${km.toFixed(2)} km \u00b7 UTM zone ${zone}N` +
+    (parsed.tracks.length > 1 ? ` \u00b7 longest of ${parsed.tracks.length} tracks` : '');
+  refInfo.textContent = 'Optional: load the official centreline of this road or pipe to measure real accuracy.';
+  if (qualitySelect.value === 'survey') qualitySelect.value = 'phone';   // GPX logs are almost always plain GPS
+  reconstructBtn.disabled = false;
+  autoTuneBtn.disabled = false;
+  refreshRawPoints();
+  runReconstruction();
+}
+
+function buildGpxPoints() {
+  const k = M_TO_UNIT[unitSelect.value];
+  rawPoints = gpxMeters.map((p, i) => ({ x: p.x * k, y: p.y * k, z: null, pt: String(i + 1), desc: 'GPS' }));
+  applyReference();   // re-clip in the current unit
+}
+
+refBtn.addEventListener('click', () => refInput.click());
+refInput.addEventListener('change', e => { const f = e.target.files[0]; if (f) handleReference(f); refInput.value = ''; });
+
+async function handleReference(file) {
+  if (!gpxActive) return;
+  refInfo.textContent = `Reading ${file.name} and finding the nearest line\u2026`;
+  await new Promise(r => setTimeout(r, 30));   // let the message paint before the heavy work
+  let geo;
+  try { geo = JSON.parse(await file.text()); }
+  catch (err) { alert('Could not parse that reference file: ' + err.message); refInfo.textContent = ''; return; }
+  const cands = extractLines(geo).map(l => {
+    const { points } = projectLine(l.coords, gpxZone);   // same zone as the track, so they are comparable
+    const p = l.props || {};
+    return { key: l.id, name: p.name || p.NAME || p.PROPONENT || `line ${l.id}`, points, lenM: polylineLength(points) };
+  }).filter(l => l.points.length >= 2);
+  if (!cands.length) { alert('No LineString features found in that reference file.'); return; }
+  refLines = rankLinesByProximity(gpxMeters, cands).slice(0, 10);
+  const k = M_TO_UNIT[unitSelect.value], u = unitLabel();
+  refSelect.innerHTML = '';
+  refLines.forEach(l => {
+    const o = document.createElement('option'); o.value = l.key;
+    o.textContent = `${l.name} \u00b7 ${Math.round(l.medianDist * k).toLocaleString()} ${u} from your track \u00b7 ${Math.round(l.lenM * k).toLocaleString()} ${u} long`;
+    refSelect.appendChild(o);
+  });
+  refSelect.value = refLines[0].key;
+  refLineRow.style.display = 'flex';
+  refInfo.textContent = refLines[0].medianDist > 500
+    ? `Nearest line is ${Math.round(refLines[0].medianDist)} m from your track, so it may not be the right reference.`
+    : `Using the nearest line, trimmed to the stretch your track covers. ${cands.length} line${cands.length === 1 ? '' : 's'} in the file.`;
+  applyReference();
+  runReconstruction();
+}
+refSelect.addEventListener('change', () => { applyReference(); updateFidelity(); });
+
+// Trim the chosen reference to the stretch the track actually covers.
+function applyReference() {
+  const sel = refLines.find(l => l.key === refSelect.value);
+  if (!gpxActive || !sel || rawPoints.length < 2) { if (gpxActive) { referenceLine = null; referenceLabel = ''; } return; }
+  const k = M_TO_UNIT[unitSelect.value];
+  const full = sel.points.map(p => ({ x: p.x * k, y: p.y * k }));
+  referenceLine = clipToSpan(full, rawPoints[0], rawPoints[rawPoints.length - 1]);
+  referenceLabel = sel.name;
 }
 
 function guessHeader(patterns) {
@@ -207,7 +336,7 @@ sample8Btn.addEventListener('click', () => loadSample({ widthIn: 8, seed: 4 }));
 sample36Btn.addEventListener('click', () => loadSample({ widthIn: 36, seed: 11 }));
 sampleCurveBtn.addEventListener('click', () => loadSample({
   widthIn: 8, seed: 1, route: SAMPLE_CURVE_ROUTE, spacing: 10, noise: 1,
-  defl: 3, minPts: 3, arcs: true, name: 'curved route (90\u00b0 sweep, R = 400 ft)'
+  defl: 6, minPts: 5, arcs: true, name: 'curved route (90\u00b0 sweep, R = 400 ft)'
 }));
 function loadSample(opts) {
   const o = { ...SAMPLE_DEFAULTS, ...opts };
@@ -218,8 +347,8 @@ function loadSample(opts) {
   const pts = generateSyntheticRoute(o.route, o.spacing, o.noise, o.seed, 100, 0.01);
   rawPoints = pts.map((p, i) => ({ x: p.x, y: p.y, z: p.z, pt: String(i + 1), desc: 'CL PIPE' }));
   parsedRows = []; headers = [];
-  geoActive = false;
-  geoPicker.style.display = 'none';
+  resetSources();
+  qualitySelect.value = 'survey'; // the samples are survey-grade shots
   mappingEl.style.display = 'none';
   filenameEl.textContent = `synthetic ${o.widthIn}" ${o.name} (${pts.length} shots)`;
   filenameEl.classList.add('show');
@@ -259,7 +388,7 @@ reconstructBtn.addEventListener('click', () => {
 
 function runReconstruction() {
   if (!rawPoints.length) { alert('No valid X/Y points found — check your column mapping.'); return; }
-  const widthFt = pipeWidthInUnits(parseFloat(widthSlider.value), unitSelect.value); // inches -> survey units (ft or m)
+  const widthFt = effectiveTolWidth();   // pipe width in survey units, raised to the survey-quality noise floor if larger
   const deflDeg = parseFloat(deflSlider.value);
   const minPts = parseInt(minPtsSlider.value, 10);
   result = reconstruct(rawPoints, widthFt, deflDeg, minPts);
@@ -288,6 +417,16 @@ function runReconstruction() {
   drawProfile();
 }
 
+const unitsPerFoot = () => (unitSelect.value === 'm' ? 0.3048 : 1);
+function effectiveTolWidth() {
+  return effectiveWidth(pipeWidthInUnits(parseFloat(widthSlider.value), unitSelect.value), qualitySelect.value, unitsPerFoot());
+}
+qualitySelect.addEventListener('change', () => {
+  if (!rawPoints.length) return;
+  refreshRawPoints();
+  runReconstruction();
+});
+
 /* ---------------- fidelity check ---------------- */
 // Does the result actually follow the line it was built from? Compared in both
 // directions, sampled along the lines (see js/fidelity.js). In GeoJSON mode the
@@ -300,14 +439,25 @@ const FID_TEXT = {
   check: ['CHECK',     'The result deviates in places. Inspect the plan view before using it.'],
   poor:  ['POOR FIT',  'The result does NOT follow the input line. Do not use it as it is.']
 };
+// What the fidelity check (and Auto-tune) compare against, and how tolerant to be.
+function fidelityInputs() {
+  const useRef = (geoActive || gpxActive) && referenceLine && referenceLine.length >= 2;
+  const reference = useRef ? referenceLine : rawPoints.map(p => ({ x: p.x, y: p.y }));
+  const f = unitsPerFoot();
+  const farFt = farToleranceFt(qualitySelect.value);
+  // Our own noisy GPS fixes joined in order zigzag, so they are longer than the real path; only judge
+  // length against them when the data is survey grade (or when a real reference line is loaded).
+  const judgeLength = useRef || qualitySelect.value === 'survey';
+  return { useRef, reference, f, farFt, farTol: farFt * f, sampleStep: 10 * f, sparseTol: FEET.sparse * f, judgeLength };
+}
+
 function updateFidelity() {
-  const useGeo = geoActive && referenceLine && referenceLine.length >= 2;
-  const reference = useGeo ? referenceLine : rawPoints.map(p => ({ x: p.x, y: p.y }));
+  const { useRef, reference, f, farFt, farTol, sampleStep, sparseTol, judgeLength } = fidelityInputs();
   if (!result || reference.length < 2 || result.vertices.length < 2) { fidelityEl.hidden = true; return; }
 
-  const unit = unitSelect.value, f = FEET_TO_UNIT[unit], u = unitLabel();
+  const u = unitLabel();
   const c = compareToReference(reference, result.vertices, {
-    farTol: FEET.far * f, sampleStep: 10 * f, sparseTol: FEET.sparse * f,
+    farTol, sampleStep, sparseTol, judgeLength,
     inputPoints: rawPoints.map(p => ({ x: p.x, y: p.y }))
   });
 
@@ -329,17 +479,22 @@ function updateFidelity() {
   document.getElementById('fidMeanB').textContent = dist(c.resultToRef.mean);
   document.getElementById('fidMaxA').textContent = dist(c.refToResult.max);
   document.getElementById('fidMaxB').textContent = dist(c.resultToRef.max);
-  document.getElementById('fidFarLabel').textContent = `Beyond ${FEET.far} ft`;
+  document.getElementById('fidFarLabel').textContent = `Beyond ${Math.round(farFt)} ft`;
   document.getElementById('fidFarA').textContent = pct(c.refToResult.farFrac);
   document.getElementById('fidFarB').textContent = pct(c.resultToRef.farFrac);
   document.getElementById('fidLenRef').textContent =
-    `${Math.round(c.referenceLength).toLocaleString()} ${u} \u2192 ${Math.round(c.resultLength).toLocaleString()} ${u} (${c.lengthDiffPct >= 0 ? '+' : ''}${c.lengthDiffPct.toFixed(1)}%)`;
+    `${Math.round(c.referenceLength).toLocaleString()} ${u} \u2192 ${Math.round(c.resultLength).toLocaleString()} ${u} (${c.lengthDiffPct >= 0 ? '+' : ''}${c.lengthDiffPct.toFixed(1)}%${c.judgeLength ? '' : ', not judged: your own fixes zigzag'})`;
   document.getElementById('fidSpacing').textContent = `${dist(c.spacing.mean)} (max ${dist(c.spacing.max)})`;
-  document.getElementById('fidBasis').textContent = useGeo
-    ? (geoNoise.checked
-        ? 'Reference = the original GeoJSON line (not the simulated shots), so this is the recovery error on synthetic noise.'
-        : 'Reference = the GeoJSON line you loaded.')
-    : `Reference = the ${rawPoints.length.toLocaleString()} input shots joined in order.`;
+  document.getElementById('fidBasis').textContent =
+    geoActive && useRef
+      ? (geoNoise.checked
+          ? 'Reference = the original GeoJSON line (not the simulated shots), so this is the recovery error on synthetic noise.'
+          : 'Reference = the GeoJSON line you loaded.')
+    : gpxActive && useRef
+      ? `Reference = "${referenceLabel}" from your reference file, trimmed to the stretch your track covers. This is measured accuracy against that line.`
+    : gpxActive
+      ? 'No reference line loaded, so this compares the result with your own GPS fixes. Load a reference line to measure real accuracy.'
+      : `Reference = the ${rawPoints.length.toLocaleString()} input shots joined in order.`;
   fidelityEl.hidden = false;
 }
 
@@ -436,28 +591,22 @@ printBtn.addEventListener('click', () => window.print());
 autoTuneBtn.addEventListener('click', () => {
   refreshRawPoints();
   if (!rawPoints.length) { alert('No valid X/Y points found — check your column mapping.'); return; }
-  const widthFt = pipeWidthInUnits(parseFloat(widthSlider.value), unitSelect.value);
-  const minPtsOptions = [3, 4, 5, 6, 7, 8];
-  const deflOptions = [6, 8, 10, 12, 15, 20];
-  let best = null;
-  for (const mp of minPtsOptions) {
-    for (const dd of deflOptions) {
-      const r = reconstruct(rawPoints, widthFt, dd, mp);
-      if (!r.qa.length) continue;
-      const avgRms = r.qa.reduce((s, q) => s + q.rms, 0) / r.qa.length;
-      // score: reward low residual, mildly penalize an unreasonable vertex count
-      // (too few = probably over-merged; too many = probably still noisy)
-      const vertexPenalty = r.vertices.length <= 2 ? 5 : (r.vertices.length > rawPoints.length * 0.3 ? 3 : 0);
-      const score = avgRms + vertexPenalty;
-      if (!best || score < best.score) best = { minPts: mp, deflDeg: dd, score, vertices: r.vertices.length, avgRms };
-    }
-  }
-  if (best) {
+  const { reference, f, farTol, sampleStep, sparseTol, judgeLength } = fidelityInputs();
+  const label = autoTuneBtn.textContent;
+  autoTuneBtn.disabled = true; autoTuneBtn.textContent = 'Tuning…'; tuneNote.textContent = '';
+  // let the button repaint before the search (under a second for most files)
+  setTimeout(() => {
+    const { best, tried } = autoTune(rawPoints, reference, { widthUnits: effectiveTolWidth(), farTol, sampleStep, sparseTol, judgeLength });
+    autoTuneBtn.disabled = false; autoTuneBtn.textContent = label;
+    if (!best) { tuneNote.textContent = 'Could not tune: too few usable points.'; return; }
     minPtsSlider.value = best.minPts;
     deflSlider.value = best.deflDeg;
     updateParamLabels();
     runReconstruction();
-  }
+    tuneNote.textContent = best.acceptable
+      ? `Tried ${tried} settings. Picked ${best.deflDeg}\u00b0 and ${best.minPts} points: ${best.vertices} vertices that follow the line.`
+      : `Tried ${tried} settings and none followed the line well. The least bad was ${best.deflDeg}\u00b0 and ${best.minPts} points (${best.verdict.toUpperCase()}). The input may be too sparse or too noisy for this method.`;
+  }, 30);
 });
 
 function downloadCSV(csv, filename) {
