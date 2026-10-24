@@ -86,7 +86,7 @@ test('dense survey-style samples come out GOOD', () => {
   const dense = [
     [SAMPLE_TRUE_ROUTE, 25, 1.5, 4, 8, 10, 5],
     [SAMPLE_TRUE_ROUTE, 25, 1.5, 11, 36, 10, 5],
-    [SAMPLE_CURVE_ROUTE, 10, 1, 1, 8, 3, 3]
+    [SAMPLE_CURVE_ROUTE, 10, 1, 1, 8, 6, 5]
   ];
   for (const [route, spacing, noise, seed, widthIn, defl, minPts] of dense) {
     const raw = L(generateSyntheticRoute(route, spacing, noise, seed, 100, 0.01));

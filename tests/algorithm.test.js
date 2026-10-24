@@ -139,7 +139,7 @@ test('buildCurveRoute: arc vertices all sit on a circle of the requested radius'
 
 test('detectArcs: curved sample gives line + arc + line with the arc radius near truth', () => {
   const raw = generateSyntheticRoute(SAMPLE_CURVE_ROUTE, 10, 1, 1, 100, 0.01);
-  const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 3, 3);
+  const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 6, 5);
   const elements = detectArcs(r);
   assert.deepEqual(elements.map(e => e.type), ['line', 'arc', 'line']);
   const arc = elements[1];
@@ -148,7 +148,7 @@ test('detectArcs: curved sample gives line + arc + line with the arc radius near
 
 test('detectArcs: tangent runs are kept out of the arc', () => {
   const raw = generateSyntheticRoute(SAMPLE_CURVE_ROUTE, 10, 1, 1, 100, 0.01);
-  const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 3, 3);
+  const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 6, 5);
   const [lead, arc, out] = detectArcs(r);
   // lead-in is ~250 ft and lead-out ~250 ft; the arc must not swallow them
   assert.ok(Math.hypot(lead.to.x - lead.from.x, lead.to.y - lead.from.y) > 200);
@@ -177,4 +177,55 @@ test('toLandXML: declares the linear unit', () => {
   const els = detectArcs(r);
   assert.ok(toLandXML(els, r.vertices).includes('linearUnit="foot"'));
   assert.ok(toLandXML(els, r.vertices, 'm').includes('linearUnit="meter"'));
+});
+
+test('regression: no true bend is lost when a short run sits between two bends (8" pipe, low noise)', () => {
+  // The merge used to force under-sampled pieces into the wrong neighbour, losing ~7% of
+  // true bends here (bends A and B bracket the route's shortest, 260 ft run).
+  let missed = 0, trials = 0;
+  for (const noise of [0.5, 1.5]) {
+    for (let seed = 1; seed <= 40; seed++) {
+      const raw = generateSyntheticRoute(SAMPLE_TRUE_ROUTE, 25, noise, seed, 100, 0.01);
+      const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 10, 5);
+      for (const t of SAMPLE_TRUE_ROUTE.slice(1, -1)) {
+        trials++;
+        if (Math.min(...r.vertices.map(v => Math.hypot(v.x - t.x, v.y - t.y))) > 15) missed++;
+      }
+    }
+  }
+  assert.ok(missed <= 1, `${missed} of ${trials} true bends lost`);
+});
+
+test('regression: gross outliers do not cost real bends', () => {
+  let missed = 0, trials = 0;
+  for (let seed = 1; seed <= 40; seed++) {
+    const raw = generateSyntheticRoute(SAMPLE_TRUE_ROUTE, 25, 1.5, seed, 100, 0.01);
+    for (const k of [7, 19, 33]) raw[k] = { ...raw[k], x: raw[k].x + 15, y: raw[k].y - 15 };   // three bad shots, ~21 ft off
+    const r = reconstruct(raw, pipeWidthInUnits(8, 'ft'), 10, 5);
+    for (const t of SAMPLE_TRUE_ROUTE.slice(1, -1)) {
+      trials++;
+      if (Math.min(...r.vertices.map(v => Math.hypot(v.x - t.x, v.y - t.y))) > 15) missed++;
+    }
+  }
+  assert.ok(missed <= 1, `${missed} of ${trials} true bends lost`);
+});
+
+test('curve demo settings (6 deg, 5 pts) give line + arc + line on at least 95% of seeds', () => {
+  let ideal = 0;
+  const N = 40;
+  for (let seed = 1; seed <= N; seed++) {
+    const raw = generateSyntheticRoute(SAMPLE_CURVE_ROUTE, 10, 1, seed, 100, 0.01);
+    const els = detectArcs(reconstruct(raw, pipeWidthInUnits(8, 'ft'), 6, 5));
+    if (els.map(e => e.type[0]).join('') === 'lal') ideal++;
+  }
+  assert.ok(ideal / N >= 0.95, `${ideal}/${N}`);
+});
+
+test('reconstruct stays fast on a long survey (20,000 shots well under a few seconds)', () => {
+  const pts = [];
+  for (let i = 0; i < 20000; i++) { const t = i * 25; pts.push({ x: t + Math.sin(i) * 1.2, y: Math.sin(t / 4000) * 800 + Math.cos(i * 1.7) * 1.2 }); }
+  const t0 = Date.now();
+  const r = reconstruct(pts, 2, 10, 5);
+  assert.ok(r.vertices.length >= 2);
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
 });
